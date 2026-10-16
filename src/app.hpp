@@ -1,6 +1,7 @@
 #pragma once
 #include "backend.hpp"
 #include "renderer.hpp"
+#include "toolbar.hpp"
 #include <commctrl.h>
 #include <set>
 namespace paper {
@@ -43,13 +44,20 @@ class AppWindow {
         SearchPrev,
         SearchNext,
         OutlineTab,
-        ThumbnailTab
+        ThumbnailTab,
+        Save
     };
     enum class Tool { Pen, Marker, Eraser };
     HWND window_ = nullptr, canvas_ = nullptr, tabs_ = nullptr, tree_ = nullptr, thumbs_ = nullptr,
-         status_ = nullptr;
+         status_ = nullptr, tooltips_ = nullptr;
     std::map<int, HWND> controls_;
     std::vector<std::pair<int, int>> toolbar_;
+    std::map<int, ToolbarIcon> icons_;
+    std::map<int, std::wstring> tooltipText_;
+    std::vector<RECT> separators_;
+    std::unique_ptr<ToolbarPainter> toolbarPainter_;
+    HWND hotButton_ = nullptr;
+    int toolbarBottom_ = 0;
     HFONT font_ = nullptr;
     UINT dpi_ = 96;
     int sidebarWidth_ = 240, lastThumbTop_ = -1;
@@ -110,6 +118,7 @@ class AppWindow {
     void shutdown();
     static LRESULT CALLBACK WindowProc(HWND, UINT, WPARAM, LPARAM);
     static LRESULT CALLBACK CanvasProc(HWND, UINT, WPARAM, LPARAM);
+    static LRESULT CALLBACK ButtonProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     LRESULT message(UINT, WPARAM, LPARAM);
     LRESULT canvasMessage(UINT, WPARAM, LPARAM);
 

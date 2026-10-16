@@ -1,6 +1,8 @@
-# PaperView
+# PDF view
 
-[下载 Windows 64 位安装包（Setup.exe）](downloads/PaperView-Setup-0.1.0-x64.exe?raw=true)
+[下载 Windows 64 位安装包（Setup.exe）](downloads/PDF-view-Setup-0.2.0-x64.exe?raw=true)
+
+0.2.0：重绘矢量图标工具栏，增加悬停提示、颜色指示、浅色选中状态和窄窗口自动换行；窗口标题统一为 PDF view。
 
 面向 Windows 10 的本地 PDF 阅读与批注工具：Edge 风格工具栏、目录与缩略图、多标签、绘制开关、鼠标与触控笔迹、双指移动缩放、整笔橡皮、撤销重做、搜索及自动保存。无打印功能，原始 PDF 不变。
 
@@ -15,10 +17,10 @@ python3 scripts/fetch_pdfium.py
 python3 scripts/build_windows.py
 ```
 
-输出 `artifacts/PaperView-Setup-0.1.0-x64.exe`。非系统安装的工具链可传 `--toolchain-root`。
+输出 `artifacts/PDF-view-Setup-0.2.0-x64.exe`。非系统安装的工具链可传 `--toolchain-root`。
 
 核心测试：`cmake -S . -B build-native && cmake --build build-native && ctest --test-dir build-native --output-on-failure`。
 
-测试样例生成脚本需要 reportlab、pypdf、Pillow。Windows 程序可通过 `PaperView.exe --self-test sample.pdf output-directory` 验证实际 PDF 引擎。GUI 冒烟脚本依赖测试环境中的 Wine、Xvfb 和 xdotool。
+测试样例生成脚本需要 reportlab、pypdf、Pillow。Windows 程序可通过 `PaperView.exe --self-test sample.pdf output-directory` 验证实际 PDF 引擎。GUI 冒烟脚本依赖测试环境中的 Wine、Xvfb 和 xdotool；先将 `tests/windows_ui_probe.cpp` 用 MinGW 编译为 `build-windows/windows_ui_probe.exe`，以原生窗口 API 验证窄窗口布局。
 
 见 [使用说明](docs/USER_GUIDE.zh-CN.md)。真实 Win10 触控和目标硬件性能仍需实机验收。

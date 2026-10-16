@@ -39,7 +39,7 @@ def main():
     run([windres, "--preprocessor=" + preprocessor, "--preprocessor-arg=-E", "--preprocessor-arg=-xc", "--preprocessor-arg=-DRC_INVOKED", "-I", "packaging", "-i", "packaging/app.rc", "-o", build / "app-res.o"])
     flags = ["-std=c++20", "-O2", "-DNDEBUG", "-DUNICODE", "-D_UNICODE", "-DWINVER=0x0A00", "-D_WIN32_WINNT=0x0A00", "-Isrc", "-Wall", "-Wextra", "-Wno-missing-field-initializers", "-Wno-cast-function-type", "-ffunction-sections", "-fdata-sections"]
     headers = b"".join(p.read_bytes() for p in sorted((ROOT / "src").glob("*.hpp"))) + (ROOT / "src/pdf_api.inc").read_bytes()
-    sources = ["main", "app", "backend", "renderer", "core"]
+    sources = ["main", "app", "backend", "renderer", "toolbar", "core"]
     def compile_one(name):
         source = ROOT / "src" / (name + ".cpp")
         obj = build / (name + ".o")
@@ -65,8 +65,8 @@ def main():
     artifacts = ROOT / "artifacts"
     artifacts.mkdir(exist_ok=True)
     if not args.skip_installer:
-        run([find("makensis"), "-V2", "-DPAYLOAD=" + str(package), "-DOUTPUT=" + str(artifacts / "PaperView-Setup-0.1.0-x64.exe"), ROOT / "packaging/installer.nsi"])
-        shutil.make_archive(str(artifacts / "PaperView-0.1.0-x64-portable"), "zip", package)
+        run([find("makensis"), "-V2", "-DPAYLOAD=" + str(package), "-DOUTPUT=" + str(artifacts / "PDF-view-Setup-0.2.0-x64.exe"), ROOT / "packaging/installer.nsi"])
+        shutil.make_archive(str(artifacts / "PDF-view-0.2.0-x64-portable"), "zip", package)
         files = sorted(p for p in artifacts.iterdir() if p.suffix in {".exe", ".zip"})
         (artifacts / "SHA256SUMS.txt").write_text("".join(hashlib.sha256(p.read_bytes()).hexdigest() + "  " + p.name + "\n" for p in files))
     print("Windows build:", package)

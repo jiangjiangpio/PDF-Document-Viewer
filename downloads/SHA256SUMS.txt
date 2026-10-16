@@ -1,1 +1,1 @@
-17042184608dc681cd093a59ef512456f0b24a7109fdb6bd2a3a150da5196174  PaperView-Setup-0.1.0-x64.exe
+cd744ec56eeb038fb8f2db57f1da9343b2de11ffbd66d64dd2e6d3d1d67921ee  PDF-view-Setup-0.2.0-x64.exe

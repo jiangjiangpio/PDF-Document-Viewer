@@ -153,7 +153,7 @@ DocumentSession *AppWindow::byId(int id) {
     return nullptr;
 }
 int AppWindow::run(HINSTANCE instance, int show, const std::vector<std::wstring> &paths) {
-    INITCOMMONCONTROLSEX cc{sizeof(cc), ICC_TAB_CLASSES | ICC_TREEVIEW_CLASSES};
+    INITCOMMONCONTROLSEX cc{sizeof(cc), ICC_TAB_CLASSES | ICC_TREEVIEW_CLASSES | ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&cc);
     WNDCLASSEXW wc{sizeof(wc)};
     wc.lpfnWndProc = WindowProc;
@@ -170,9 +170,8 @@ int AppWindow::run(HINSTANCE instance, int show, const std::vector<std::wstring>
     cv.hCursor = LoadCursor(nullptr, IDC_ARROW);
     cv.lpszClassName = L"PaperViewCanvas";
     RegisterClassExW(&cv);
-    window_ = CreateWindowExW(0, wc.lpszClassName, L"PaperView · 教学 PDF 阅读器",
-                              WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 850,
-                              nullptr, nullptr, instance, this);
+    window_ = CreateWindowExW(0, wc.lpszClassName, L"PDF view", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+                              CW_USEDEFAULT, CW_USEDEFAULT, 1280, 850, nullptr, nullptr, instance, this);
     if (!window_)
         throw std::runtime_error("Cannot create application window");
     ShowWindow(window_, show);
@@ -194,43 +193,61 @@ int AppWindow::run(HINSTANCE instance, int show, const std::vector<std::wstring>
 void AppWindow::createControls() {
     dpi_ = GetDpiForWindow(window_);
     storage_ = storageDirectory();
-    tabs_ = CreateWindowExW(0, WC_TABCONTROLW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | TCS_TOOLTIPS, 0, 0,
-                            0, 0, window_, nullptr, nullptr, nullptr);
-    SendMessageW(tabs_, TCM_SETMINTABWIDTH, 0, px(160));
-    auto button = [&](int id, const wchar_t *label, int width) {
+    tabs_ = CreateWindowExW(0, WC_TABCONTROLW, L"",
+                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | TCS_TOOLTIPS | TCS_OWNERDRAWFIXED |
+                                TCS_FIXEDWIDTH,
+                            0, 0, 0, 0, window_, nullptr, nullptr, nullptr);
+    SendMessageW(tabs_, TCM_SETITEMSIZE, 0, MAKELPARAM(px(220), px(32)));
+    toolbarPainter_ = std::make_unique<ToolbarPainter>();
+    tooltips_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
+                                WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT,
+                                CW_USEDEFAULT, CW_USEDEFAULT, window_, nullptr, nullptr, nullptr);
+    SendMessageW(tooltips_, TTM_SETMAXTIPWIDTH, 0, px(340));
+    SendMessageW(tooltips_, TTM_SETDELAYTIME, TTDT_INITIAL, 450);
+    auto button = [&](int id, const wchar_t *label, ToolbarIcon icon, const wchar_t *tip, int width = 44) {
         controls_[id] =
             CreateWindowExW(0, L"BUTTON", label, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 0,
                             0, window_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), nullptr, nullptr);
         toolbar_.emplace_back(id, width);
+        icons_[id] = icon;
+        tooltipText_[id] = tip;
+        SetWindowSubclass(controls_[id], ButtonProc, 1, reinterpret_cast<DWORD_PTR>(this));
+        TOOLINFOW info{sizeof(info)};
+        info.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+        info.hwnd = window_;
+        info.uId = reinterpret_cast<UINT_PTR>(controls_[id]);
+        info.lpszText = tooltipText_[id].data();
+        SendMessageW(tooltips_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&info));
     };
-    button(Open, L"打开", 62);
-    button(Sidebar, L"目录", 62);
-    button(Draw, L"绘制", 64);
-    button(Palette, L"▾", 40);
-    button(Marker, L"荧光笔", 76);
-    button(Eraser, L"橡皮", 62);
-    button(Undo, L"撤销", 62);
-    button(Redo, L"重做", 62);
-    button(ZoomOut, L"−", 40);
+    button(Sidebar, L"目录", ToolbarIcon::Sidebar, L"显示或隐藏目录与缩略图");
+    button(Open, L"打开", ToolbarIcon::Open, L"打开 PDF (Ctrl+O)");
+    button(Draw, L"绘制", ToolbarIcon::Pen, L"开启或关闭绘制：单指书写，双指移动与缩放", 78);
+    button(Palette, L"画笔设置", ToolbarIcon::Chevron, L"画笔颜色与粗细", 28);
+    button(Marker, L"荧光笔", ToolbarIcon::Marker, L"荧光笔：再次点击返回画笔");
+    button(Eraser, L"橡皮", ToolbarIcon::Eraser, L"橡皮：整笔擦除");
+    button(Undo, L"撤销", ToolbarIcon::Undo, L"撤销 (Ctrl+Z)");
+    button(Redo, L"重做", ToolbarIcon::Redo, L"重做 (Ctrl+Y)");
+    button(ZoomOut, L"缩小", ToolbarIcon::Minus, L"缩小 (Ctrl+-)");
     controls_[ZoomLabel] =
         CreateWindowExW(0, L"STATIC", L"100%", WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE, 0, 0, 0, 0,
                         window_, nullptr, nullptr, nullptr);
     toolbar_.emplace_back(ZoomLabel, 58);
-    button(ZoomIn, L"＋", 40);
-    button(Fit, L"适应宽度", 90);
-    button(Rotate, L"旋转", 60);
-    controls_[PageEdit] =
-        CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_NUMBER | ES_CENTER | ES_AUTOHSCROLL, 0, 0, 0,
-                        0, window_, reinterpret_cast<HMENU>(PageEdit), nullptr, nullptr);
-    toolbar_.emplace_back(PageEdit, 48);
-    controls_[PageTotal] = CreateWindowExW(0, L"STATIC", L"/ 0", WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE, 0, 0,
+    button(ZoomIn, L"放大", ToolbarIcon::Plus, L"放大 (Ctrl++)");
+    button(Fit, L"适应宽度", ToolbarIcon::Fit, L"适应宽度 (Ctrl+0)");
+    controls_[PageEdit] = CreateWindowExW(
+        0, L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_NUMBER | ES_CENTER | ES_AUTOHSCROLL, 0, 0, 0, 0,
+        window_, reinterpret_cast<HMENU>(PageEdit), nullptr, nullptr);
+    toolbar_.emplace_back(PageEdit, 46);
+    controls_[PageTotal] = CreateWindowExW(0, L"STATIC", L" / 0", WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE, 0, 0,
                                            0, 0, window_, nullptr, nullptr, nullptr);
-    toolbar_.emplace_back(PageTotal, 60);
-    button(Find, L"搜索", 60);
-    button(CloseTab, L"关闭页签", 86);
-    button(Fullscreen, L"全屏", 60);
-    button(Help, L"帮助", 60);
+    toolbar_.emplace_back(PageTotal, 56);
+    button(Rotate, L"旋转", ToolbarIcon::Rotate, L"顺时针旋转 90°");
+    button(Find, L"搜索", ToolbarIcon::Search, L"搜索文字 (Ctrl+F)");
+    button(Save, L"保存", ToolbarIcon::Save, L"保存本机批注 (Ctrl+S)");
+    button(CloseTab, L"关闭页签", ToolbarIcon::Close, L"关闭当前标签页 (Ctrl+W)");
+    button(Fullscreen, L"全屏", ToolbarIcon::Fullscreen, L"全屏 (F11)");
+    button(Help, L"帮助", ToolbarIcon::Help, L"帮助与快捷键");
     controls_[SearchEdit] =
         CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 0, 0,
                         window_, reinterpret_cast<HMENU>(SearchEdit), nullptr, nullptr);
@@ -242,10 +259,28 @@ void AppWindow::createControls() {
         controls_[id] =
             CreateWindowExW(0, L"BUTTON", label, WS_CHILD | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 0, 0, window_,
                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), nullptr, nullptr);
+    for (auto [id, icon] :
+         std::vector<std::pair<int, ToolbarIcon>>{{SearchGo, ToolbarIcon::Search},
+                                                  {SearchPrev, ToolbarIcon::Previous},
+                                                  {SearchNext, ToolbarIcon::Next},
+                                                  {OutlineTab, ToolbarIcon::Outline},
+                                                  {ThumbnailTab, ToolbarIcon::Thumbnails}}) {
+        icons_[id] = icon;
+        tooltipText_[id] = windowText(controls_[id]);
+        SetWindowSubclass(controls_[id], ButtonProc, 1, reinterpret_cast<DWORD_PTR>(this));
+        TOOLINFOW info{sizeof(info)};
+        info.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+        info.hwnd = window_;
+        info.uId = reinterpret_cast<UINT_PTR>(controls_[id]);
+        info.lpszText = tooltipText_[id].data();
+        SendMessageW(tooltips_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&info));
+    }
     tree_ = CreateWindowExW(0, WC_TREEVIEWW, L"",
-                            WS_CHILD | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS, 0,
-                            0, 0, 0, window_, nullptr, nullptr, nullptr);
+                            WS_CHILD | TVS_HASBUTTONS | TVS_SHOWSELALWAYS | TVS_FULLROWSELECT | TVS_NOHSCROLL,
+                            0, 0, 0, 0, window_, nullptr, nullptr, nullptr);
     TreeView_SetItemHeight(tree_, px(36));
+    TreeView_SetBkColor(tree_, RGB(255, 255, 255));
+    TreeView_SetTextColor(tree_, RGB(60, 65, 72));
     thumbs_ = CreateWindowExW(0, L"LISTBOX", L"",
                               WS_CHILD | WS_VSCROLL | LBS_NOTIFY | LBS_OWNERDRAWFIXED | LBS_NODATA |
                                   LBS_NOINTEGRALHEIGHT,
@@ -269,14 +304,15 @@ void AppWindow::createControls() {
 }
 void AppWindow::updateFont() {
     HFONT previous = font_;
-    font_ = CreateFontW(-px(14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, 0, 0,
+    font_ = CreateFontW(-px(13), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, 0, 0,
                         CLEARTYPE_QUALITY, 0, L"Microsoft YaHei UI");
     for (auto &[id, w] : controls_)
         SendMessageW(w, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-    for (HWND w : {tabs_, tree_, thumbs_, status_})
+    for (HWND w : {tabs_, tree_, thumbs_, status_, tooltips_})
         SendMessageW(w, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
     if (previous)
         DeleteObject(previous);
+    SendMessageW(tabs_, TCM_SETITEMSIZE, 0, MAKELPARAM(px(220), px(32)));
     TreeView_SetItemHeight(tree_, px(36));
     SendMessageW(thumbs_, LB_SETITEMHEIGHT, 0, px(170));
 }
@@ -286,44 +322,73 @@ void AppWindow::layout() {
     RECT area{};
     GetClientRect(window_, &area);
     int width = area.right, height = area.bottom;
-    MoveWindow(tabs_, px(5), px(3), width - px(10), px(34), TRUE);
-    int x = px(6), y = px(39), row = px(44);
-    for (auto [id, w] : toolbar_) {
-        int bw = px(w);
-        if (x + bw > width - px(6)) {
-            x = px(6);
-            y += row + px(3);
+    MoveWindow(tabs_, 0, 0, width, px(36), TRUE);
+    int row = px(44), top = px(36);
+    separators_.clear();
+    auto placeGroup = [&](const std::vector<int> &ids, int x, int y) {
+        for (int id : ids) {
+            auto item =
+                std::find_if(toolbar_.begin(), toolbar_.end(), [id](auto &p) { return p.first == id; });
+            if (id == Draw || id == Undo || id == PageEdit)
+                x += px(8);
+            int w = px(item->second);
+            bool edit = id == PageEdit;
+            MoveWindow(controls_[id], x, y + (edit ? px(8) : 0), w, edit ? px(28) : row, TRUE);
+            x += w;
         }
-        MoveWindow(controls_[id], x, y, bw, row, TRUE);
-        x += bw + px(3);
-    }
-    y += row + px(5);
+        return x;
+    };
+    std::vector<int> left{Sidebar, Open, Draw, Palette, Marker, Eraser, Undo, Redo};
+    std::vector<int> middle{ZoomOut, ZoomLabel, ZoomIn, Fit, PageEdit, PageTotal, Rotate};
+    std::vector<int> right{Find, Save, CloseTab, Fullscreen, Help};
+    auto groupWidth = [&](const auto &ids) {
+        int total = 0;
+        for (int id : ids)
+            for (auto [control, w] : toolbar_)
+                if (control == id)
+                    total += px(w + ((id == Draw || id == Undo || id == PageEdit) ? 8 : 0));
+        return total;
+    };
+    int lw = groupWidth(left), mw = groupWidth(middle), rw = groupWidth(right);
+    bool compact = width < lw + mw + rw + px(48);
+    auto separator = [&](int x, int y) { separators_.push_back({x, y + px(12), x + 1, y + row - px(12)}); };
+    placeGroup(left, px(8), top);
+    separator(px(8 + 88 + 4), top);
+    separator(px(8 + 88 + 8 + 78 + 28 + 88 + 4), top);
+    int middleY = compact ? top + row : top;
+    int middleX = compact ? px(8) : std::clamp((width - mw) / 2, lw + px(24), width - rw - mw - px(16));
+    placeGroup(middle, middleX, middleY);
+    placeGroup(right, width - rw - px(8), compact ? top + row : top);
+    separator(middleX + px(44 + 58 + 44 + 44 + 4), middleY);
+    int y = top + row * (compact ? 2 : 1) + px(1);
+    toolbarBottom_ = y - 1;
     for (int id : {SearchEdit, SearchGo, SearchPrev, SearchNext})
         ShowWindow(controls_[id], find_ ? SW_SHOW : SW_HIDE);
     if (find_) {
-        int ew = std::max(px(160), width - px(330));
-        MoveWindow(controls_[SearchEdit], px(10), y, ew, px(36), TRUE);
-        int xx = ew + px(18);
+        int searchWidth = std::min(px(360), std::max(px(160), width - px(170)));
+        int x = width - searchWidth - px(142);
+        MoveWindow(controls_[SearchEdit], x, y + px(7), searchWidth, px(30), TRUE);
+        x += searchWidth + px(4);
         for (int id : {SearchGo, SearchPrev, SearchNext}) {
-            MoveWindow(controls_[id], xx, y, px(92), px(38), TRUE);
-            xx += px(98);
+            MoveWindow(controls_[id], x, y, px(44), row, TRUE);
+            x += px(44);
         }
-        y += px(44);
+        y += row;
     }
     int side = sidebar_ ? std::min(px(sidebarWidth_), width / 3) : 0;
-    int body = std::max(1, height - y - px(28));
+    int body = std::max(1, height - y - px(24));
     ShowWindow(controls_[OutlineTab], sidebar_ ? SW_SHOW : SW_HIDE);
     ShowWindow(controls_[ThumbnailTab], sidebar_ ? SW_SHOW : SW_HIDE);
     if (side) {
-        MoveWindow(controls_[OutlineTab], px(5), y, side / 2 - px(6), px(42), TRUE);
-        MoveWindow(controls_[ThumbnailTab], side / 2, y, side / 2 - px(5), px(42), TRUE);
+        MoveWindow(controls_[OutlineTab], px(4), y, px(44), px(44), TRUE);
+        MoveWindow(controls_[ThumbnailTab], px(48), y, px(44), px(44), TRUE);
         MoveWindow(tree_, 0, y + px(45), side - px(2), std::max(1, body - px(45)), TRUE);
         MoveWindow(thumbs_, 0, y + px(45), side - px(2), std::max(1, body - px(45)), TRUE);
     }
     ShowWindow(tree_, sidebar_ && !thumbnails_ ? SW_SHOW : SW_HIDE);
     ShowWindow(thumbs_, sidebar_ && thumbnails_ ? SW_SHOW : SW_HIDE);
     MoveWindow(canvas_, side, y, std::max(1, width - side), body, TRUE);
-    MoveWindow(status_, px(10), height - px(26), width - px(20), px(24), TRUE);
+    MoveWindow(status_, px(10), height - px(23), width - px(20), px(22), TRUE);
     RECT cr{};
     GetClientRect(canvas_, &cr);
     for (auto &s : documents_)
@@ -375,7 +440,7 @@ void AppWindow::updateUi() {
     EnableWindow(controls_[Redo], ready && s->annotations.canRedo());
     if (GetFocus() != controls_[PageEdit])
         SetWindowTextW(controls_[PageEdit], ready ? std::to_wstring(s->view.currentPage() + 1).c_str() : L"");
-    SetWindowTextW(controls_[PageTotal], ready ? (L"/ " + std::to_wstring(s->view.count())).c_str() : L"/ 0");
+    SetWindowTextW(controls_[PageTotal], ready ? (L" / " + std::to_wstring(s->view.count())).c_str() : L" / 0");
     SetWindowTextW(controls_[ZoomLabel],
                    ready ? (std::to_wstring(static_cast<int>(std::lround(s->view.zoom * 100))) + L"%").c_str()
                          : L"—");
@@ -413,12 +478,9 @@ void AppWindow::activate(int index) {
         save(*old);
     active_ = index;
     TabCtrl_SetCurSel(tabs_, index);
-    if (auto *s = active()) {
-        SetWindowTextW(window_,
-                       (std::filesystem::path(s->path).filename().wstring() + L" — PaperView").c_str());
-        if (s->info && s->info->outline.empty())
-            thumbnails_ = true;
-    }
+    SetWindowTextW(window_, L"PDF view");
+    if (auto *s = active(); s && s->info && s->info->outline.empty())
+        thumbnails_ = true;
     populateSidebar();
     layout();
     updateUi();
@@ -426,7 +488,7 @@ void AppWindow::activate(int index) {
 }
 void AppWindow::openFile(const std::wstring &path) {
     if (documents_.size() >= 32) {
-        MessageBoxW(window_, L"同时最多打开 32 份文档，请先关闭部分标签页。", L"PaperView", MB_OK);
+        MessageBoxW(window_, L"同时最多打开 32 份文档，请先关闭部分标签页。", L"PDF view", MB_OK);
         return;
     }
     std::wstring full;
@@ -577,10 +639,11 @@ void AppWindow::paint() {
                         0xe8eaed);
         auto *s = active();
         if (!s) {
-            renderer_->text(L"PaperView", {60, 65, 600, 40}, 0x1e293b);
-            renderer_->text(L"将 PDF 拖到窗口，或点击“打开”\n\n顶部“绘制”按钮开启手写批注\n单指书写 · "
-                            L"双指移动和缩放\n\n批注自动保存在这台电脑中",
-                            {60, 120, 750, 300});
+            renderer_->text(L"PDF view", {60, 65, 600, 40}, 0x1e293b);
+            renderer_->text(
+                L"将 PDF 拖到窗口，或点击左上角文件夹图标\n\n顶部“绘制”按钮开启手写批注\n单指书写 · "
+                L"双指移动和缩放\n\n批注自动保存在这台电脑中",
+                {60, 120, 750, 300});
         } else if (s->loading)
             renderer_->text(L"正在打开文档…", {60, 70, 650, 80});
         else if (s->info) {
@@ -969,6 +1032,8 @@ void AppWindow::palette() {
         else
             inkWidth_ = penWidths[choice - 300];
     }
+    InvalidateRect(controls_[Draw], nullptr, FALSE);
+    InvalidateRect(controls_[Marker], nullptr, FALSE);
     SetFocus(canvas_);
 }
 void AppWindow::command(int id) {
@@ -986,7 +1051,7 @@ void AppWindow::command(int id) {
         return;
     case Help:
         MessageBoxW(window_,
-                    L"PaperView 0.1.0\n\n打开：Ctrl+O，也可拖入 "
+                    L"PDF view 0.2.0\n\n打开：Ctrl+O，也可拖入 "
                     L"PDF\n绘制按钮：开启／关闭手写\n荧光笔／橡皮：再次点击返回普通画笔\n单指：阅读时拖动，绘"
                     L"制时书写\n双指：移动与缩放；会取消未提交的单指笔迹\n橡皮：整笔擦除\n搜索：Ctrl+F，F3 "
                     L"下一个，Shift+F3 上一个\n撤销／重做：Ctrl+Z / Ctrl+Y\n缩放：Ctrl+滚轮，Ctrl+0 "
@@ -1029,6 +1094,10 @@ void AppWindow::command(int id) {
         return;
     input_.cancel();
     switch (id) {
+    case Save:
+        s->dirty = true;
+        save(*s);
+        break;
     case Draw:
         drawing_ = !drawing_;
         break;
@@ -1147,27 +1216,60 @@ void AppWindow::drawItem(const DRAWITEMSTRUCT &i) {
         DrawTextW(i.hDC, text.c_str(), -1, &r, DT_SINGLELINE | DT_VCENTER);
         return;
     }
+    if (i.CtlType == ODT_TAB) {
+        bool selected = static_cast<int>(i.itemID) == TabCtrl_GetCurSel(tabs_);
+        HBRUSH brush = CreateSolidBrush(selected ? RGB(255, 255, 255) : RGB(239, 240, 242));
+        FillRect(i.hDC, &i.rcItem, brush);
+        DeleteObject(brush);
+        if (selected) {
+            RECT bar = i.rcItem;
+            bar.top = bar.bottom - px(2);
+            brush = CreateSolidBrush(RGB(74, 111, 160));
+            FillRect(i.hDC, &bar, brush);
+            DeleteObject(brush);
+        }
+        RECT iconRect = i.rcItem;
+        iconRect.right = iconRect.left + px(36);
+        toolbarPainter_->draw(i.hDC, iconRect, ToolbarIcon::Open, false, false, false, false, false,
+                              inkColor_, dpi_);
+        wchar_t text[512]{};
+        TCITEMW item{};
+        item.mask = TCIF_TEXT;
+        item.pszText = text;
+        item.cchTextMax = 512;
+        TabCtrl_GetItem(tabs_, i.itemID, &item);
+        RECT label = i.rcItem;
+        label.left += px(38);
+        label.right -= px(12);
+        SelectObject(i.hDC, font_);
+        SetBkMode(i.hDC, TRANSPARENT);
+        SetTextColor(i.hDC, RGB(55, 60, 68));
+        DrawTextW(i.hDC, text, -1, &label, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        return;
+    }
     if (i.CtlType == ODT_BUTTON) {
         bool selected =
             (i.CtlID == Draw && drawing_) || (i.CtlID == Marker && drawing_ && tool_ == Tool::Marker) ||
             (i.CtlID == Eraser && drawing_ && tool_ == Tool::Eraser) || (i.CtlID == Sidebar && sidebar_) ||
             (i.CtlID == OutlineTab && !thumbnails_) || (i.CtlID == ThumbnailTab && thumbnails_);
-        COLORREF bg = selected                     ? RGB(219, 234, 254)
-                      : i.itemState & ODS_SELECTED ? RGB(225, 229, 235)
-                                                   : RGB(248, 249, 251);
-        HBRUSH brush = CreateSolidBrush(bg);
-        FillRect(i.hDC, &i.rcItem, brush);
-        DeleteObject(brush);
-        SelectObject(i.hDC, font_);
-        SetBkMode(i.hDC, TRANSPARENT);
-        SetTextColor(i.hDC, i.itemState & ODS_DISABLED ? RGB(160, 165, 175)
-                            : selected                 ? RGB(29, 78, 216)
-                                                       : RGB(51, 65, 85));
-        RECT r = i.rcItem;
-        DrawTextW(i.hDC, windowText(i.hwndItem).c_str(), -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        if (i.itemState & ODS_FOCUS) {
-            InflateRect(&r, -3, -3);
-            DrawFocusRect(i.hDC, &r);
+        auto icon = icons_.find(i.CtlID);
+        if (icon == icons_.end())
+            return;
+        bool disabled = i.itemState & ODS_DISABLED;
+        bool focus = (i.itemState & ODS_FOCUS) && !(i.itemState & ODS_NOFOCUSRECT);
+        toolbarPainter_->draw(i.hDC, i.rcItem, icon->second, selected, hotButton_ == i.hwndItem,
+                              i.itemState & ODS_SELECTED, disabled, focus,
+                              i.CtlID == Marker ? markerColor_ : inkColor_, dpi_, i.CtlID == Draw);
+        if (i.CtlID == Draw) {
+            RECT text = i.rcItem;
+            text.left += px(36);
+            text.right -= px(7);
+            SelectObject(i.hDC, font_);
+            SetBkMode(i.hDC, TRANSPARENT);
+            SetTextColor(i.hDC, disabled   ? RGB(185, 189, 194)
+                                : selected ? RGB(32, 88, 152)
+                                           : RGB(80, 84, 90));
+            DrawTextW(i.hDC, L"绘制", -1, &text, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
         }
         return;
     }
@@ -1365,9 +1467,29 @@ LRESULT CALLBACK AppWindow::WindowProc(HWND w, UINT m, WPARAM a, LPARAM b) {
     try {
         return self->message(m, a, b);
     } catch (const std::exception &e) {
-        MessageBoxW(w, utf16(e.what()).c_str(), L"PaperView 错误", MB_OK | MB_ICONERROR);
+        MessageBoxW(w, utf16(e.what()).c_str(), L"PDF view 错误", MB_OK | MB_ICONERROR);
         return m == WM_CREATE ? -1 : 0;
     }
+}
+LRESULT CALLBACK AppWindow::ButtonProc(HWND w, UINT m, WPARAM a, LPARAM b, UINT_PTR, DWORD_PTR data) {
+    auto *self = reinterpret_cast<AppWindow *>(data);
+    if (m == WM_MOUSEMOVE && self->hotButton_ != w) {
+        if (self->hotButton_)
+            InvalidateRect(self->hotButton_, nullptr, FALSE);
+        self->hotButton_ = w;
+        TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, w, 0};
+        TrackMouseEvent(&track);
+        InvalidateRect(w, nullptr, FALSE);
+    } else if (m == WM_MOUSELEAVE) {
+        if (self->hotButton_ == w)
+            self->hotButton_ = nullptr;
+        InvalidateRect(w, nullptr, FALSE);
+    } else if (m == WM_NCDESTROY) {
+        if (self->hotButton_ == w)
+            self->hotButton_ = nullptr;
+        RemoveWindowSubclass(w, ButtonProc, 1);
+    }
+    return DefSubclassProc(w, m, a, b);
 }
 LRESULT CALLBACK AppWindow::CanvasProc(HWND w, UINT m, WPARAM a, LPARAM b) {
     auto *self = reinterpret_cast<AppWindow *>(GetWindowLongPtrW(w, GWLP_USERDATA));
@@ -1490,11 +1612,25 @@ LRESULT AppWindow::message(UINT m, WPARAM a, LPARAM b) {
         if (!a)
             input_.cancel();
         break;
+    case WM_CTLCOLORSTATIC: {
+        HDC dc = reinterpret_cast<HDC>(a);
+        SetTextColor(dc, RGB(85, 90, 98));
+        SetBkColor(dc, RGB(248, 248, 248));
+        SetDCBrushColor(dc, RGB(248, 248, 248));
+        return reinterpret_cast<LRESULT>(GetStockObject(DC_BRUSH));
+    }
     case WM_ERASEBKGND: {
         RECT r{};
         GetClientRect(window_, &r);
-        HBRUSH brush = CreateSolidBrush(RGB(248, 249, 251));
+        HBRUSH brush = CreateSolidBrush(RGB(248, 248, 248));
         FillRect(reinterpret_cast<HDC>(a), &r, brush);
+        DeleteObject(brush);
+        HDC dc = reinterpret_cast<HDC>(a);
+        brush = CreateSolidBrush(RGB(221, 223, 226));
+        RECT border{0, toolbarBottom_, r.right, toolbarBottom_ + 1};
+        FillRect(dc, &border, brush);
+        for (auto line : separators_)
+            FillRect(dc, &line, brush);
         DeleteObject(brush);
         return 1;
     }

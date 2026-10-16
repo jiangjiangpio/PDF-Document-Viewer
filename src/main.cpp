@@ -128,7 +128,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
         paper::AppWindow app;
         result = app.run(instance, show, args);
     } catch (const std::exception &e) {
-        MessageBoxW(nullptr, paper::utf16(e.what()).c_str(), L"PaperView 启动失败", MB_OK | MB_ICONERROR);
+        MessageBoxW(nullptr, paper::utf16(e.what()).c_str(), L"PDF view 启动失败", MB_OK | MB_ICONERROR);
         result = 1;
     }
     if (mutex)
