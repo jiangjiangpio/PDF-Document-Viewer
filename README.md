@@ -1,2 +1,24 @@
-# PDF-Document-Viewer
-A lightweight, education-focused PDF viewer featuring highly accurate rendering of math, physics, and chemistry content, responsive touch and stylus support, Office-style pen annotations, and smooth performance on 11th-generation Intel Core i5 systems with integrated graphics.
+# PaperView
+
+[下载 Windows 64 位安装包（Setup.exe）](downloads/PaperView-Setup-0.1.0-x64.exe?raw=true)
+
+面向 Windows 10 的本地 PDF 阅读与批注工具：Edge 风格工具栏、目录与缩略图、多标签、绘制开关、鼠标与触控笔迹、双指移动缩放、整笔橡皮、撤销重做、搜索及自动保存。无打印功能，原始 PDF 不变。
+
+采用 C++20、Win32、Direct2D、PDFium。文档模型、坐标变换、手势、存储、后台渲染调度和缓存由独立对象负责。使用按需分块渲染、过时任务取消和有界缓存。批注存储在本机原子替换文件中。
+
+## 构建
+
+Linux 需要 Python 3、MinGW-w64 x64 POSIX 编译器和 NSIS。
+
+```sh
+python3 scripts/fetch_pdfium.py
+python3 scripts/build_windows.py
+```
+
+输出 `artifacts/PaperView-Setup-0.1.0-x64.exe`。非系统安装的工具链可传 `--toolchain-root`。
+
+核心测试：`cmake -S . -B build-native && cmake --build build-native && ctest --test-dir build-native --output-on-failure`。
+
+测试样例生成脚本需要 reportlab、pypdf、Pillow。Windows 程序可通过 `PaperView.exe --self-test sample.pdf output-directory` 验证实际 PDF 引擎。GUI 冒烟脚本依赖测试环境中的 Wine、Xvfb 和 xdotool。
+
+见 [使用说明](docs/USER_GUIDE.zh-CN.md)。真实 Win10 触控和目标硬件性能仍需实机验收。
