@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; worker-src 'self' blob:; connect-src 'self' blob: data:; font-src 'self' data:;">
+  <title>PDF Document Viewer</title>
+</head>
+<body>
+  <div id="app">
+    <header class="app-header">
+      <div class="brand"><div class="brand-mark">P<span>∕</span></div><div><strong>PDF Document Viewer</strong><small>学习 · 阅读 · 批注</small></div></div>
+      <div class="header-right"><span class="offline-badge"><i></i> 本地离线</span><button class="header-open" data-action="open">＋ 打开 PDF</button></div>
+    </header>
+    <div class="tab-strip"><div id="tabs" class="tabs"></div><button class="new-tab" data-action="open" title="打开文档">＋</button></div>
+    <nav class="ribbon" aria-label="工具栏">
+      <div class="ribbon-group file-group">
+        <button class="ribbon-button" data-action="open" title="打开 Ctrl+O"><span class="tool-icon">▤</span><span>打开</span></button>
+        <button class="ribbon-button" data-action="export" title="导出独立批注 JSON"><span class="tool-icon">⇩</span><span>导出批注</span></button>
+        <div class="group-caption">文件</div>
+      </div>
+      <div class="ribbon-group">
+        <button class="ribbon-button tool-button active" data-tool="hand" title="手型滚动"><span class="tool-icon">✋</span><span>浏览</span></button>
+        <button class="ribbon-button tool-button" data-tool="pen" title="触控笔 / 手写"><span class="tool-icon">✎</span><span>画笔</span></button>
+        <button class="ribbon-button tool-button" data-tool="highlight" title="荧光笔"><span class="tool-icon">▰</span><span>荧光笔</span></button>
+        <button class="ribbon-button tool-button" data-tool="eraser" title="橡皮擦"><span class="tool-icon">⌫</span><span>橡皮擦</span></button>
+        <div class="group-caption">批注工具</div>
+      </div>
+      <div class="ribbon-group palette-group">
+        <div class="color-row" id="colorRow">
+          <button class="color-dot selected" style="--swatch:#355bda" data-color="#355bda" aria-label="蓝色"></button>
+          <button class="color-dot" style="--swatch:#17243b" data-color="#17243b" aria-label="深色"></button>
+          <button class="color-dot" style="--swatch:#dc4156" data-color="#dc4156" aria-label="红色"></button>
+          <button class="color-dot" style="--swatch:#169b78" data-color="#169b78" aria-label="绿色"></button>
+          <button class="color-dot" style="--swatch:#e3a020" data-color="#e3a020" aria-label="黄色"></button>
+          <button class="color-dot" style="--swatch:#a45ed6" data-color="#a45ed6" aria-label="紫色"></button>
+        </div>
+        <div class="size-row"><span>粗细</span><input id="penSize" type="range" min="1" max="12" step="1" value="3" aria-label="画笔粗细"><output id="penSizeValue">3</output></div>
+        <div class="group-caption">笔迹设置</div>
+      </div>
+      <div class="ribbon-group">
+        <button class="ribbon-button compact" data-action="undo" title="撤销 Ctrl+Z"><span class="tool-icon">↶</span><span>撤销</span></button>
+        <button class="ribbon-button compact" data-action="redo" title="重做 Ctrl+Y"><span class="tool-icon">↷</span><span>重做</span></button>
+        <div class="group-caption">历史</div>
+      </div>
+      <div class="ribbon-group view-group">
+        <button class="ribbon-button compact" data-action="sidebar" title="切换侧栏"><span class="tool-icon">◧</span><span>侧栏</span></button>
+        <button class="ribbon-button compact" data-action="fitWidth"><span class="tool-icon">↔</span><span>适合宽度</span></button>
+        <button class="ribbon-button compact" data-action="fitPage"><span class="tool-icon">□</span><span>整页</span></button>
+        <button class="ribbon-button compact" data-action="search" title="查找 Ctrl+F"><span class="tool-icon">⌕</span><span>查找</span></button>
+        <div class="group-caption">视图</div>
+      </div>
+    </nav>
+    <div class="reader-shell" id="readerShell">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-tabs"><button class="side-tab active" data-side="thumbs">页面缩略图</button><button class="side-tab" data-side="outline">目录</button></div>
+        <div class="sidebar-content" id="sidebarContent"></div>
+      </aside>
+      <section class="document-area" id="documentArea">
+        <div class="search-bar hidden" id="searchBar"><span>⌕</span><input id="searchInput" placeholder="查找文档中的文字…" autocomplete="off"><button data-action="searchPrev" title="上一个">↑</button><button data-action="searchNext" title="下一个">↓</button><span id="searchCount" class="search-count"></span><button data-action="closeSearch" title="关闭">×</button></div>
+        <div class="empty-state" id="emptyState">
+          <div class="empty-art"><div class="empty-page"><div class="empty-line"></div><div class="empty-line short"></div><div class="empty-formula">∫ f(x) dx</div><div class="empty-line"></div></div><span class="empty-pencil">✎</span></div>
+          <h1>专注阅读，随手记录灵感</h1>
+          <p>为数学、物理、化学学习设计的 PDF 阅读器。<br>清晰呈现公式与图表，支持触控笔手写批注。</p>
+          <button class="primary-button" data-action="open">＋ 选择 PDF 文件</button>
+          <span class="empty-tip">也可以将 PDF 文件拖放到这里</span>
+        </div>
+        <div class="page-scroll hidden" id="pageScroll"><div class="page-list" id="pageList"></div></div>
+        <div class="drop-overlay hidden" id="dropOverlay">松开以打开 PDF 文件</div>
+      </section>
+    </div>
+    <footer class="statusbar">
+      <div class="status-left"><span id="statusName">未打开文档</span><span class="status-separator">·</span><span id="saveStatus">批注与原 PDF 分离保存</span></div>
+      <div class="status-center"><button data-action="prev" title="上一页">‹</button><input id="pageNumber" type="number" min="1" value="1" aria-label="页码"><span id="totalPages">/ 0</span><button data-action="next" title="下一页">›</button></div>
+      <div class="status-right"><button data-action="zoomOut" title="缩小">−</button><span id="zoomLabel">100%</span><button data-action="zoomIn" title="放大">＋</button><input id="zoomRange" type="range" min="25" max="300" step="5" value="100" aria-label="缩放比例"></div>
+    </footer>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <input id="fallbackFile" type="file" accept="application/pdf,.pdf" multiple hidden>
+  </div>
+  <script type="module" src="/src/app.js"></script>
+</body>
+</html>
