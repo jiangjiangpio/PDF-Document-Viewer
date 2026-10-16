@@ -10,7 +10,8 @@
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
     "build": "vite build && node scripts/copy-pdf-assets.mjs",
     "dist": "npm run build && electron-builder --win nsis --x64 --publish never",
-    "check": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check src/app.js"
+    "check": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check src/app.js",
+    "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
     "pdfjs-dist": "4.10.38"
@@ -21,20 +22,32 @@
     "electron": "33.4.11",
     "electron-builder": "25.1.8",
     "vite": "6.0.11",
-    "wait-on": "8.0.2"
+    "wait-on": "8.0.2",
+    "playwright-core": "1.51.1"
   },
   "build": {
     "appId": "com.pdfdocumentviewer.desktop",
     "productName": "PDF Document Viewer",
     "artifactName": "PDF-Document-Viewer-Setup-${version}.${ext}",
-    "directories": { "output": "release" },
+    "directories": {
+      "output": "release"
+    },
     "files": [
       "dist/**/*",
       "electron/**/*",
       "package.json"
     ],
     "asar": true,
-    "win": { "target": [{ "target": "nsis", "arch": ["x64"] }] },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
@@ -42,6 +55,12 @@
       "createStartMenuShortcut": true,
       "shortcutName": "PDF Document Viewer"
     },
-    "fileAssociations": [{ "ext": "pdf", "name": "PDF Document", "role": "Viewer" }]
+    "fileAssociations": [
+      {
+        "ext": "pdf",
+        "name": "PDF Document",
+        "role": "Viewer"
+      }
+    ]
   }
 }
