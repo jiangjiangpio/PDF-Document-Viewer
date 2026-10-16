@@ -1,23 +1,30 @@
-name: Windows installer
+name: Build Windows installer
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   workflow_dispatch:
+
 jobs:
-  build:
+  windows-installer:
     runs-on: windows-2022
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: npm install --no-audit --no-fund
-      - run: npm run check
-      - run: npm run dist
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Check syntax
+        run: npm run check
+      - name: Package NSIS setup
+        run: npm run dist
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      - uses: actions/upload-artifact@v4
+      - name: Upload setup file
+        uses: actions/upload-artifact@v4
         with:
           name: PDF-Document-Viewer-Windows-Setup
           path: release/*Setup*.exe
           if-no-files-found: error
+          retention-days: 30
