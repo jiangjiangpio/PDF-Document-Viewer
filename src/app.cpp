@@ -1039,7 +1039,7 @@ void AppWindow::command(int id) {
         return;
     case Help:
         MessageBoxW(window_,
-                    L"PDF view 0.3.0\n\n打开：Ctrl+O，也可拖入 "
+                    L"PDF view 0.3.1\n\n打开：Ctrl+O，也可拖入 "
                     L"PDF\n绘制按钮：开启／关闭手写\n荧光笔／橡皮：再次点击返回普通画笔\n单指：阅读时拖动，绘"
                     L"制时书写\n双指：移动与缩放；会取消未提交的单指笔迹\n橡皮：整笔擦除\n搜索：Ctrl+F，F3 "
                     L"下一个，Shift+F3 上一个\n撤销／重做：Ctrl+Z / Ctrl+Y\n缩放：Ctrl+滚轮，Ctrl+0 "
