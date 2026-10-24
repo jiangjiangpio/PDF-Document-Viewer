@@ -1,4 +1,5 @@
 #include "app.hpp"
+#include "palette.hpp"
 #include <commdlg.h>
 #include <fstream>
 #include <shellapi.h>
@@ -428,20 +429,22 @@ void AppWindow::populateSidebar() {
     SendMessageW(thumbs_, LB_SETCURSEL, s->view.currentPage(), 0);
 }
 void AppWindow::updateUi() {
+    auto setText = [](HWND w, const std::wstring &text) { if (windowText(w) != text) SetWindowTextW(w, text.c_str()); };
+    auto enable = [](HWND w, bool value) { if (bool(IsWindowEnabled(w)) != value) EnableWindow(w, value); };
     auto *s = active();
     bool ready = s && !s->loading && s->info;
     for (auto [id, w] : toolbar_)
         if (id != Open && id != Sidebar && id != Help && id != Fullscreen && id != ZoomLabel &&
-            id != PageTotal)
-            EnableWindow(controls_[id], ready || (id == CloseTab && s));
+            id != PageTotal && id != Undo && id != Redo && id != Draw && id != Palette && id != Marker && id != Eraser)
+            enable(controls_[id], ready || (id == CloseTab && s));
     for (int id : {Draw, Palette, Marker, Eraser})
-        EnableWindow(controls_[id], ready && s->info->writable);
-    EnableWindow(controls_[Undo], ready && s->annotations.canUndo());
-    EnableWindow(controls_[Redo], ready && s->annotations.canRedo());
+        enable(controls_[id], ready && s->info->writable);
+    enable(controls_[Undo], ready && s->annotations.canUndo());
+    enable(controls_[Redo], ready && s->annotations.canRedo());
     if (GetFocus() != controls_[PageEdit])
-        SetWindowTextW(controls_[PageEdit], ready ? std::to_wstring(s->view.currentPage() + 1).c_str() : L"");
-    SetWindowTextW(controls_[PageTotal], ready ? (L" / " + std::to_wstring(s->view.count())).c_str() : L" / 0");
-    SetWindowTextW(controls_[ZoomLabel],
+        setText(controls_[PageEdit], ready ? std::to_wstring(s->view.currentPage() + 1).c_str() : L"");
+    setText(controls_[PageTotal], ready ? (L" / " + std::to_wstring(s->view.count())).c_str() : L" / 0");
+    setText(controls_[ZoomLabel],
                    ready ? (std::to_wstring(static_cast<int>(std::lround(s->view.zoom * 100))) + L"%").c_str()
                          : L"—");
     std::wstring status = s ? s->status : L"打开 PDF，开始阅读与批注 · Ctrl+O 打开 · F11 全屏";
@@ -455,9 +458,13 @@ void AppWindow::updateUi() {
             status +=
                 L"    搜索 " + std::to_wstring(s->hitIndex + 1) + L" / " + std::to_wstring(s->hits.size());
     }
-    SetWindowTextW(status_, status.c_str());
-    for (int id : {Draw, Marker, Eraser, Sidebar, OutlineTab, ThumbnailTab})
-        InvalidateRect(controls_[id], nullptr, TRUE);
+    setText(status_, status.c_str());
+    const unsigned state = unsigned(drawing_) | (unsigned(tool_) << 1) | (unsigned(sidebar_) << 4) | (unsigned(thumbnails_) << 5);
+    if (state != toolbarState_) {
+        toolbarState_ = state;
+        for (int id : {Draw, Marker, Eraser, Sidebar, OutlineTab, ThumbnailTab})
+            InvalidateRect(controls_[id], nullptr, FALSE);
+    }
     if (ready) {
         SCROLLINFO info{sizeof(info), SIF_RANGE | SIF_PAGE | SIF_POS};
         info.nMin = 0;
@@ -1008,30 +1015,11 @@ void AppWindow::toggleFullscreen() {
     }
 }
 void AppWindow::palette() {
-    HMENU menu = CreatePopupMenu();
-    uint32_t selected = tool_ == Tool::Marker ? markerColor_ : inkColor_;
-    for (int i = 0; i < 7; ++i)
-        AppendMenuW(menu, MF_OWNERDRAW | (colors[i] == selected ? MF_CHECKED : 0), 200 + i,
-                    reinterpret_cast<LPCWSTR>(static_cast<INT_PTR>(200 + i)));
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    for (int i = 0; i < 4; ++i)
-        AppendMenuW(menu, MF_OWNERDRAW, 300 + i, reinterpret_cast<LPCWSTR>(static_cast<INT_PTR>(300 + i)));
-    RECT r{};
-    GetWindowRect(controls_[Palette], &r);
-    int choice = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN, r.left, r.bottom, 0, window_, nullptr);
-    DestroyMenu(menu);
-    if (choice >= 200 && choice < 207) {
-        if (tool_ == Tool::Marker)
-            markerColor_ = colors[choice - 200];
-        else
-            inkColor_ = colors[choice - 200];
-    }
-    if (choice >= 300 && choice < 304) {
-        if (tool_ == Tool::Marker)
-            markerWidth_ = markerWidths[choice - 300];
-        else
-            inkWidth_ = penWidths[choice - 300];
-    }
+    bool marker = tool_ == Tool::Marker;
+    PenPalette panel(marker ? markerColor_ : inkColor_, marker ? markerWidth_ : inkWidth_, marker);
+    paletteOpen_ = true;
+    panel.show(window_, controls_[Palette]);
+    paletteOpen_ = false;
     InvalidateRect(controls_[Draw], nullptr, FALSE);
     InvalidateRect(controls_[Marker], nullptr, FALSE);
     SetFocus(canvas_);
@@ -1051,7 +1039,7 @@ void AppWindow::command(int id) {
         return;
     case Help:
         MessageBoxW(window_,
-                    L"PDF view 0.2.0\n\n打开：Ctrl+O，也可拖入 "
+                    L"PDF view 0.3.0\n\n打开：Ctrl+O，也可拖入 "
                     L"PDF\n绘制按钮：开启／关闭手写\n荧光笔／橡皮：再次点击返回普通画笔\n单指：阅读时拖动，绘"
                     L"制时书写\n双指：移动与缩放；会取消未提交的单指笔迹\n橡皮：整笔擦除\n搜索：Ctrl+F，F3 "
                     L"下一个，Shift+F3 上一个\n撤销／重做：Ctrl+Z / Ctrl+Y\n缩放：Ctrl+滚轮，Ctrl+0 "
@@ -1473,6 +1461,7 @@ LRESULT CALLBACK AppWindow::WindowProc(HWND w, UINT m, WPARAM a, LPARAM b) {
 }
 LRESULT CALLBACK AppWindow::ButtonProc(HWND w, UINT m, WPARAM a, LPARAM b, UINT_PTR, DWORD_PTR data) {
     auto *self = reinterpret_cast<AppWindow *>(data);
+    if (m == WM_ERASEBKGND) return 1;
     if (m == WM_MOUSEMOVE && self->hotButton_ != w) {
         if (self->hotButton_)
             InvalidateRect(self->hotButton_, nullptr, FALSE);
@@ -1644,6 +1633,7 @@ LRESULT AppWindow::message(UINT m, WPARAM a, LPARAM b) {
     return DefWindowProcW(window_, m, a, b);
 }
 LRESULT AppWindow::canvasMessage(UINT m, WPARAM a, LPARAM b) {
+    if (m == WM_MOUSEACTIVATE && paletteOpen_) return MA_ACTIVATEANDEAT;
     auto *s = active();
     switch (m) {
     case WM_ERASEBKGND:

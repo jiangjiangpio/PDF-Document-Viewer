@@ -1,8 +1,8 @@
 # PDF view
 
-[下载 Windows 64 位安装包（Setup.exe）](downloads/PDF-view-Setup-0.2.0-x64.exe?raw=true)
+[下载 Windows 64 位安装包（Setup.exe）](downloads/PDF-view-Setup-0.3.0-x64.exe?raw=true)
 
-0.2.0：重绘矢量图标工具栏，增加悬停提示、颜色指示、浅色选中状态和窄窗口自动换行；窗口标题统一为 PDF view。
+0.3.0：圆形颜色面板、实时笔迹预览和连续粗细滑块；修复滚动时工具栏重复擦除重绘，以及撤销／重做按钮反复启用和禁用导致的闪烁。
 
 面向 Windows 10 的本地 PDF 阅读与批注工具：Edge 风格工具栏、目录与缩略图、多标签、绘制开关、鼠标与触控笔迹、双指移动缩放、整笔橡皮、撤销重做、搜索及自动保存。无打印功能，原始 PDF 不变。
 
@@ -17,7 +17,7 @@ python3 scripts/fetch_pdfium.py
 python3 scripts/build_windows.py
 ```
 
-输出 `artifacts/PDF-view-Setup-0.2.0-x64.exe`。非系统安装的工具链可传 `--toolchain-root`。
+输出 `artifacts/PDF-view-Setup-0.3.0-x64.exe`。非系统安装的工具链可传 `--toolchain-root`。
 
 核心测试：`cmake -S . -B build-native && cmake --build build-native && ctest --test-dir build-native --output-on-failure`。
 

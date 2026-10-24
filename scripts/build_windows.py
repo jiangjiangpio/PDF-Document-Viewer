@@ -65,8 +65,8 @@ def main():
     artifacts = ROOT / "artifacts"
     artifacts.mkdir(exist_ok=True)
     if not args.skip_installer:
-        run([find("makensis"), "-V2", "-DPAYLOAD=" + str(package), "-DOUTPUT=" + str(artifacts / "PDF-view-Setup-0.2.0-x64.exe"), ROOT / "packaging/installer.nsi"])
-        shutil.make_archive(str(artifacts / "PDF-view-0.2.0-x64-portable"), "zip", package)
+        run([find("makensis"), "-V2", "-DPAYLOAD=" + str(package), "-DOUTPUT=" + str(artifacts / "PDF-view-Setup-0.3.0-x64.exe"), ROOT / "packaging/installer.nsi"])
+        shutil.make_archive(str(artifacts / "PDF-view-0.3.0-x64-portable"), "zip", package)
         files = sorted(p for p in artifacts.iterdir() if p.suffix in {".exe", ".zip"})
         (artifacts / "SHA256SUMS.txt").write_text("".join(hashlib.sha256(p.read_bytes()).hexdigest() + "  " + p.name + "\n" for p in files))
     print("Windows build:", package)

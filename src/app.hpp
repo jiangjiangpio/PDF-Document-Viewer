@@ -60,6 +60,8 @@ class AppWindow {
     int toolbarBottom_ = 0;
     HFONT font_ = nullptr;
     UINT dpi_ = 96;
+    unsigned toolbarState_ = ~0u;
+    bool paletteOpen_ = false;
     int sidebarWidth_ = 240, lastThumbTop_ = -1;
     bool sidebar_ = true, thumbnails_ = false, find_ = false, drawing_ = false, fullscreen_ = false,
          closing_ = false;

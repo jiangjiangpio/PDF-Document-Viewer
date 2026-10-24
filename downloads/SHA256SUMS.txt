@@ -1,1 +1,1 @@
-cd744ec56eeb038fb8f2db57f1da9343b2de11ffbd66d64dd2e6d3d1d67921ee  PDF-view-Setup-0.2.0-x64.exe
+b6a275bcfe9d8e8f59b8489640c23304d26f7b841f1e356f0abd46d291ab9f1a  PDF-view-Setup-0.3.0-x64.exe
