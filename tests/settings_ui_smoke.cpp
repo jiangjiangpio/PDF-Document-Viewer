@@ -3,7 +3,7 @@
 #include <iostream>
 #include <thread>
 using namespace paper;
-void waitDialog(bool save) {
+void waitDialog(int action) {
     HWND panel = nullptr;
     for (int i = 0; i < 150 && !panel; i++) {
         Sleep(40);
@@ -12,7 +12,20 @@ void waitDialog(bool save) {
     if (!panel)
         return;
     Sleep(300);
-    if (save) {
+    if (action == 2) {
+        HWND tabs = GetDlgItem(panel, 10);
+        TabCtrl_SetCurSel(tabs, 3);
+        NMHDR changed{tabs, 10, TCN_SELCHANGE};
+        SendMessageW(panel, WM_NOTIFY, 10, (LPARAM)&changed);
+        HWND tutorial = GetDlgItem(panel, 31);
+        RECT bounds{};
+        GetWindowRect(tutorial, &bounds);
+        if (!IsWindowVisible(tutorial) || bounds.bottom - bounds.top < 44)
+            SendMessageW(panel, WM_COMMAND, 2, 0);
+        else
+            SendMessageW(panel, WM_COMMAND, 31, 0);
+        PostMessageW(panel, WM_NULL, 0, 0);
+    } else if (action == 1) {
         SendMessageW(GetDlgItem(panel, 20), BM_SETCHECK, BST_UNCHECKED, 0);
         SendMessageW(GetDlgItem(panel, 21), BM_SETCHECK, BST_UNCHECKED, 0);
         SendMessageW(GetDlgItem(panel, 22), CB_SETCURSEL, 3, 0);
@@ -49,6 +62,13 @@ int main() {
     cancel.join();
     valid = valid && cancelled && settings.bindings == before.bindings &&
             settings.scrollSensitivity == before.scrollSensitivity;
+    bool openTutorial = false;
+    std::thread tutorial(waitDialog, 2);
+    bool opened = showSettingsDialog(owner, settings, &openTutorial);
+    tutorial.join();
+    valid = valid && opened && openTutorial;
+    std::cout << (opened && openTutorial ? "PASS" : "FAIL")
+              << " tutorial tab exposes a touch-sized entry and returns an open request\n";
     DestroyWindow(owner);
     std::cout << (valid ? "SETTINGS_UI=PASS" : "SETTINGS_UI=FAIL") << '\n';
     return valid ? 0 : 1;

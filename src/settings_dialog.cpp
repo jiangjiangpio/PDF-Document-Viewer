@@ -33,6 +33,7 @@ class SettingsDialog {
         Assign,
         Clear,
         Defaults,
+        OpenTutorial,
         Save = 1,
         Cancel = 2
     };
@@ -43,7 +44,7 @@ class SettingsDialog {
     std::vector<std::pair<HWND, int>> pages_;
     AppSettings draft_;
     KeyChord captured_{};
-    bool done_ = false, accepted_ = false;
+    bool done_ = false, accepted_ = false, tutorial_ = false;
     int p(int n) const {
         return MulDiv(n, dpi_, 96);
     }
@@ -162,7 +163,10 @@ class SettingsDialog {
         }
         if (m == WM_COMMAND) {
             int id = LOWORD(a);
-            if (id == Save)
+            if (id == OpenTutorial) {
+                self->save();
+                self->tutorial_ = self->accepted_;
+            } else if (id == Save)
                 self->save();
             else if (id == Cancel)
                 self->done_ = true;
@@ -194,7 +198,9 @@ class SettingsDialog {
   public:
     SettingsDialog(HWND owner, const AppSettings &settings)
         : owner_(owner), dpi_(GetDpiForWindow(owner)), draft_(settings) {}
-    bool show(AppSettings &out) {
+    bool show(AppSettings &out, bool *openTutorial) {
+        if (openTutorial)
+            *openTutorial = false;
         INITCOMMONCONTROLSEX init{sizeof(init), ICC_TAB_CLASSES | ICC_BAR_CLASSES};
         InitCommonControlsEx(&init);
         WNDCLASSW wc{};
@@ -219,7 +225,7 @@ class SettingsDialog {
         font_ = CreateFontW(-p(14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, 0, 0,
                             CLEARTYPE_QUALITY, 0, L"Microsoft YaHei UI");
         control(WC_TABCONTROLW, L"", WS_TABSTOP, Tabs, 16, 12, 610, 42);
-        for (auto name : {L"阅读与性能", L"Word / WPS", L"快捷键"}) {
+        for (auto name : {L"阅读与性能", L"Word / WPS", L"快捷键", L"功能教程"}) {
             TCITEMW tab{};
             tab.mask = TCIF_TEXT;
             tab.pszText = (LPWSTR)name;
@@ -260,6 +266,13 @@ class SettingsDialog {
         control(L"BUTTON", L"绑定", WS_TABSTOP, Assign, 344, 200, 118, 44, 2);
         control(L"BUTTON", L"清除", WS_TABSTOP, Clear, 476, 200, 118, 44, 2);
         label(L"冲突时会提示。Esc、Enter、Alt+F4 与普通 Tab 保留用于窗口操作。", 344, 270, 250, 100, 2);
+        label(L"用数理化示例，边看边练", 28, 76, 560, 32, 3);
+        label(L"内置离线教程，不需要 Word。打开后使用顶部现有工具练习，批注会自动保留。", 28, 114, 560, 52,
+              3);
+        label(L"阅读与触控：多标签、目录、缩略图、页码、缩放、查找与全屏。", 28, 180, 560, 52, 3);
+        label(L"画笔与批注：绘制开关、颜色粗细、荧光笔、橡皮、撤销与重做。", 28, 238, 560, 52, 3);
+        label(L"实战练习：数学方程与函数图、物理受力图、化学方程式与分子结构。", 28, 296, 560, 52, 3);
+        control(L"BUTTON", L"打开教程并练习", WS_TABSTOP, OpenTutorial, 28, 358, 270, 44, 3);
         control(L"BUTTON", L"恢复默认", WS_TABSTOP, Defaults, 28, 434, 130, 44);
         control(L"BUTTON", L"保存", WS_TABSTOP | BS_DEFPUSHBUTTON, Save, 374, 434, 108, 44);
         control(L"BUTTON", L"取消", WS_TABSTOP, Cancel, 492, 434, 108, 44);
@@ -294,11 +307,13 @@ class SettingsDialog {
         SetForegroundWindow(owner_);
         if (accepted_)
             out = draft_;
+        if (openTutorial)
+            *openTutorial = tutorial_;
         return accepted_;
     }
 };
 } // namespace
-bool showSettingsDialog(HWND owner, AppSettings &settings) {
-    return SettingsDialog(owner, settings).show(settings);
+bool showSettingsDialog(HWND owner, AppSettings &settings, bool *openTutorial) {
+    return SettingsDialog(owner, settings).show(settings, openTutorial);
 }
 } // namespace paper

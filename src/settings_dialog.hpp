@@ -3,5 +3,5 @@
 #include <windows.h>
 namespace paper {
 std::wstring shortcutLabel(KeyChord key);
-bool showSettingsDialog(HWND owner, AppSettings &settings);
+bool showSettingsDialog(HWND owner, AppSettings &settings, bool *openTutorial = nullptr);
 } // namespace paper

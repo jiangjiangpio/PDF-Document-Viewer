@@ -1,5 +1,6 @@
 #include "app.hpp"
 #include "palette.hpp"
+#include "tutorial.hpp"
 #include <commdlg.h>
 #include <fstream>
 #include <shellapi.h>
@@ -1021,7 +1022,8 @@ void AppWindow::refreshShortcutHints() {
 void AppWindow::editSettings() {
     input_.cancel();
     auto changed = settings_;
-    if (!showSettingsDialog(window_, changed))
+    bool tutorial = false;
+    if (!showSettingsDialog(window_, changed, &tutorial))
         return;
     try {
         SettingsRepository(storage_.parent_path() / L"settings.txt").save(changed);
@@ -1035,6 +1037,17 @@ void AppWindow::editSettings() {
     sidebar_ = settings_.openSidebar;
     layout();
     refresh();
+    if (tutorial) {
+        try {
+            openFile(TutorialDocument(storage_).prepare().wstring());
+            sidebar_ = true;
+            thumbnails_ = false;
+            layout();
+        } catch (const std::exception &e) {
+            MessageBoxW(window_, (L"教程暂时无法打开。\n" + utf16(e.what())).c_str(), L"功能教程",
+                        MB_OK | MB_ICONERROR);
+        }
+    }
 }
 void AppWindow::search() {
     auto *s = active();

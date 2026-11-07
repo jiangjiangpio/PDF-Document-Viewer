@@ -64,6 +64,7 @@ jobs:
             Copy-Item -Recurse vendor/pdfium/pypdfium2-5.14.0.dist-info/licenses build-ci/package/ThirdPartyLicenses
             Copy-Item docs/USER_GUIDE.zh-CN.md build-ci/package/使用说明.txt
             Copy-Item docs/THIRD_PARTY.md build-ci/package/THIRD_PARTY.txt
+            Copy-Item packaging/TutorialFonts.txt build-ci/package/TutorialFonts.txt
             $candidates = @("${env:ProgramFiles(x86)}/NSIS/makensis.exe", "$env:ProgramFiles/NSIS/makensis.exe", "$env:ChocolateyInstall/bin/makensis.exe")
             $nsis = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
             if (!$nsis) {
@@ -73,10 +74,10 @@ jobs:
             }
             if (!$nsis) { throw "makensis.exe was not found after installing NSIS" }
             $payload = (Resolve-Path build-ci/package).Path
-            $output = Join-Path (Resolve-Path artifacts).Path 'PDF-view-Setup-0.4.0-x64.exe'
+            $output = Join-Path (Resolve-Path artifacts).Path 'PDF-view-Setup-0.4.1-x64.exe'
             & $nsis /INPUTCHARSET UTF8 /V3 "/DPAYLOAD=$payload" "/DOUTPUT=$output" packaging/installer.nsi *> artifacts/nsis.log
             if ($LASTEXITCODE -ne 0) { throw "Installer build failed" }
-            Compress-Archive -Path build-ci/package/* -DestinationPath artifacts/PDF-view-0.4.0-x64-portable.zip
+            Compress-Archive -Path build-ci/package/* -DestinationPath artifacts/PDF-view-0.4.1-x64-portable.zip
             $sums = Get-ChildItem artifacts -File | Where-Object Extension -in '.exe','.zip' | ForEach-Object {
               $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
               "$hash  $($_.Name)"
@@ -90,6 +91,15 @@ jobs:
             }
             throw
           }
+      - name: Open the settings tutorial and capture three real practice pages
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path build-ci/Release/PaperView.exe).Path
+          $app = Start-Process -FilePath $exe -PassThru
+          & build-ci/Release/tutorial_ui_driver.exe
+          $result = $LASTEXITCODE
+          if (!$app.HasExited) { Stop-Process -Id $app.Id -ErrorAction SilentlyContinue }
+          if ($result -ne 0) { throw "Settings tutorial UI check failed ($result)" }
       - uses: actions/upload-artifact@v4
         with:
           name: PDF-view-Windows-x64
@@ -100,5 +110,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
-          gh release create "$env:GITHUB_REF_NAME" artifacts/PDF-view-Setup-0.4.0-x64.exe artifacts/PDF-view-0.4.0-x64-portable.zip artifacts/SHA256SUMS.txt --title "PDF view $env:GITHUB_REF_NAME" --notes-file docs/RELEASE-0.4.0.zh-CN.md --verify-tag
+          gh release create "$env:GITHUB_REF_NAME" artifacts/PDF-view-Setup-0.4.1-x64.exe artifacts/PDF-view-0.4.1-x64-portable.zip artifacts/SHA256SUMS.txt artifacts/01-math.png artifacts/02-physics.png artifacts/03-chemistry.png --title "PDF view $env:GITHUB_REF_NAME" --notes-file docs/RELEASE-0.4.1.zh-CN.md --verify-tag
           if ($LASTEXITCODE -ne 0) { throw "GitHub Release publication failed" }

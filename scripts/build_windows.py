@@ -37,9 +37,9 @@ def main():
     def run(command):
         subprocess.run([str(x) for x in command], cwd=ROOT, env=env, check=True)
     run([windres, "--preprocessor=" + preprocessor, "--preprocessor-arg=-E", "--preprocessor-arg=-xc", "--preprocessor-arg=-DRC_INVOKED", "-I", "packaging", "-i", "packaging/app.rc", "-o", build / "app-res.o"])
-    flags = ["-std=c++20", "-O2", "-DNDEBUG", "-DUNICODE", "-D_UNICODE", "-DWINVER=0x0A00", "-D_WIN32_WINNT=0x0A00", "-Isrc", "-Wall", "-Wextra", "-Wno-missing-field-initializers", "-Wno-cast-function-type", "-ffunction-sections", "-fdata-sections"]
+    flags = ["-std=c++20", "-O2", "-DNDEBUG", "-DUNICODE", "-D_UNICODE", "-DWINVER=0x0A00", "-D_WIN32_WINNT=0x0A00", "-Isrc", "-Ipackaging", "-Wall", "-Wextra", "-Wno-missing-field-initializers", "-Wno-cast-function-type", "-ffunction-sections", "-fdata-sections"]
     headers = b"".join(p.read_bytes() for p in sorted((ROOT / "src").glob("*.hpp"))) + (ROOT / "src/pdf_api.inc").read_bytes()
-    sources = ["main", "app", "backend", "renderer", "toolbar", "core", "settings", "settings_dialog", "office", "office_convert"]
+    sources = ["main", "app", "backend", "renderer", "toolbar", "core", "settings", "settings_dialog", "office", "office_convert", "tutorial"]
     def compile_one(name):
         source = ROOT / "src" / (name + ".cpp")
         obj = build / (name + ".o")
@@ -59,14 +59,14 @@ def main():
     shutil.copy2(dll, package / "pdfium.dll")
     license_source = ROOT / "vendor/pdfium/pypdfium2-5.14.0.dist-info/licenses"
     shutil.copytree(license_source, package / "ThirdPartyLicenses", dirs_exist_ok=True)
-    for source, target in [("docs/USER_GUIDE.zh-CN.md", "使用说明.txt"), ("docs/THIRD_PARTY.md", "THIRD_PARTY.txt")]:
+    for source, target in [("docs/USER_GUIDE.zh-CN.md", "使用说明.txt"), ("docs/THIRD_PARTY.md", "THIRD_PARTY.txt"), ("packaging/TutorialFonts.txt", "TutorialFonts.txt")]:
         if (ROOT / source).exists():
             shutil.copy2(ROOT / source, package / target)
     artifacts = ROOT / "artifacts"
     artifacts.mkdir(exist_ok=True)
     if not args.skip_installer:
-        run([find("makensis"), "-V2", "-DPAYLOAD=" + str(package), "-DOUTPUT=" + str(artifacts / "PDF-view-Setup-0.4.0-x64.exe"), ROOT / "packaging/installer.nsi"])
-        shutil.make_archive(str(artifacts / "PDF-view-0.4.0-x64-portable"), "zip", package)
+        run([find("makensis"), "-V2", "-DPAYLOAD=" + str(package), "-DOUTPUT=" + str(artifacts / "PDF-view-Setup-0.4.1-x64.exe"), ROOT / "packaging/installer.nsi"])
+        shutil.make_archive(str(artifacts / "PDF-view-0.4.1-x64-portable"), "zip", package)
         files = sorted(p for p in artifacts.iterdir() if p.suffix in {".exe", ".zip"})
         (artifacts / "SHA256SUMS.txt").write_text("".join(hashlib.sha256(p.read_bytes()).hexdigest() + "  " + p.name + "\n" for p in files))
     print("Windows build:", package)
