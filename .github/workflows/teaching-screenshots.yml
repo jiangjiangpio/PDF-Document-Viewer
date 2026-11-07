@@ -31,15 +31,15 @@ jobs:
           Start-Sleep -Seconds 8
           $driver = (Resolve-Path build-demo-driver/Release/demo-driver.exe).Path
           "display 1920 1080`nresize 1540 950`nbutton 110`npage 1`ninfo`n" | Set-Content init.txt -Encoding ascii
-          & $driver init.txt
-          if ($LASTEXITCODE -ne 0) { throw 'Application was not ready' }
+          & $driver init.txt | Tee-Object -FilePath driver.log
+          if ($LASTEXITCODE -ne 0) { throw "Application was not ready ($LASTEXITCODE): $(Get-Content driver.log -Raw)" }
           for ($page = 1; $page -le 3; $page++) {
             $names = @('01-math.png', '02-physics.png', '03-chemistry.png')
             $command = Get-Content "tools/demo/demo-page-$page.txt" -Raw
             $command += "`ncapture docs/demo/$($names[$page-1])`n"
             $command | Set-Content commands.txt -Encoding ascii
             & $driver commands.txt
-            if ($LASTEXITCODE -ne 0) { throw "Screenshot $page failed" }
+            if ($LASTEXITCODE -ne 0) { throw "Screenshot $page failed ($LASTEXITCODE)" }
           }
           "close`n" | Set-Content close.txt -Encoding ascii
           & $driver close.txt

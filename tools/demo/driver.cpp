@@ -23,8 +23,9 @@ int main(int argc,char**argv){
   else if(cmd=="page"){
    f>>page;HWND tree=FindWindowExW(app,nullptr,WC_TREEVIEWW,nullptr);HTREEITEM item=TreeView_GetRoot(tree);
    for(int p=1;p<page&&item;p++)item=TreeView_GetNextSibling(tree,item);
-   if(!tree||!item||!TreeView_SelectItem(tree,item))return 7;
-   Sleep(1200);wchar_t number[32]{};GetWindowTextW(GetDlgItem(app,116),number,32);printf("Page selected: requested=%d, displayed=%ls\n",page,number);
+   if(!tree||!item)return 7;
+   TreeView_SelectItem(tree,item);
+   Sleep(1200);wchar_t number[32]{};SendMessageW(GetDlgItem(app,116),WM_GETTEXT,32,(LPARAM)number);printf("Page selected: requested=%d, displayed=%ls\n",page,number);
    if(_wtoi(number)!=page)return 8;
   }
   else if(cmd=="palette"){
