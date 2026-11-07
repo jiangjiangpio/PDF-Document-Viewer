@@ -184,6 +184,16 @@ inline Value openReadOnly(IDispatch *app, const std::filesystem::path &path) {
     args.push_back(Value::boolean(true));
     return call(documents.object(), L"Open", DISPATCH_METHOD, std::move(args));
 }
+inline void verifyIsolatedApplication(IDispatch *app, OfficeEngine engine) {
+    // Some WPS editions expose a shared application object. Do not hide or quit
+    // the user's unrelated WPS documents through that shared instance.
+    if (engine == OfficeEngine::Wps) {
+        auto documents = get(app, L"Documents");
+        if (get(documents.object(), L"Count").number() != 0)
+            throw std::runtime_error("WPS has existing documents open. Use Microsoft Word, or close WPS "
+                                     "documents before using its automation engine.");
+    }
+}
 inline Value createApplication(OfficeEngine engine) {
     CLSID id{};
     const wchar_t *name = engine == OfficeEngine::Word ? L"Word.Application" : L"kwps.Application";
@@ -194,6 +204,7 @@ inline Value createApplication(OfficeEngine engine) {
     app.v.pdispVal = nullptr;
     if (FAILED(CoCreateInstance(id, nullptr, CLSCTX_LOCAL_SERVER, IID_IDispatch, (void **)&app.v.pdispVal)))
         throw std::runtime_error("Cannot start Word / WPS");
+    verifyIsolatedApplication(app.object(), engine);
     return app;
 }
 } // namespace paper::automation

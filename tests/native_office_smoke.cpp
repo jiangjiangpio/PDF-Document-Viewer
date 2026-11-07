@@ -184,6 +184,18 @@ int main() {
     });
     Value application = wrap(app);
     try {
+        auto busyDocs = new Dispatch;
+        busyDocs->property(L"Count", Value(1));
+        auto busyApp = new Dispatch;
+        busyApp->property(L"Documents", wrap(busyDocs));
+        auto busy = wrap(busyApp);
+        bool rejected = false;
+        try {
+            automation::verifyIsolatedApplication(busy.object(), OfficeEngine::Wps);
+        } catch (...) {
+            rejected = true;
+        }
+        check(rejected, "shared WPS sessions are rejected without hiding or quitting existing documents");
         OfficePageBackend backend([&](OfficeEngine) { return application; });
         auto cancel = [] { return false; };
         auto info = backend.open(1, source.wstring(), OfficeEngine::Word, cancel);

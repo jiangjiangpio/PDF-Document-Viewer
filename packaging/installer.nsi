@@ -60,7 +60,7 @@ FunctionEnd
 Section "PaperView" SEC_MAIN
  SetRegView 64
  SetOutPath "$INSTDIR"
- File /r "${PAYLOAD}/*"
+ File /r "${PAYLOAD}\*"
  WriteUninstaller "$INSTDIR\Uninstall.exe"
  CreateDirectory "$SMPROGRAMS\PaperView"
  CreateShortcut "$SMPROGRAMS\PaperView\PDF view.lnk" "$INSTDIR\PaperView.exe"
