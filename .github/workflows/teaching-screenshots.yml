@@ -1,0 +1,58 @@
+name: Teaching screenshots on Windows
+on:
+  push:
+    branches: [demo/teaching-screenshots]
+    paths: ['tools/demo/**', '.github/workflows/teaching-screenshots.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  screenshots:
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch released application
+        shell: pwsh
+        run: |
+          Invoke-WebRequest 'https://github.com/jiangjiangpio/PDF-Document-Viewer/releases/download/v0.4.0/PDF-view-0.4.0-x64-portable.zip' -OutFile app.zip
+          Expand-Archive app.zip -DestinationPath build-demo-app
+          Get-ChildItem build-demo-app -Recurse -Filter PaperView.exe
+      - name: Build real input and screen capture driver
+        run: |
+          cmake -S tools/demo -B build-demo-driver -A x64
+          cmake --build build-demo-driver --config Release
+      - name: Draw formulas, annotations and highlighter with real mouse events
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem build-demo-app -Recurse -Filter PaperView.exe | Select-Object -First 1).FullName
+          $pdf = (Resolve-Path docs/demo/Teaching-demo.pdf).Path
+          $app = Start-Process -FilePath $exe -ArgumentList ('"' + $pdf + '"') -PassThru
+          Start-Sleep -Seconds 8
+          $driver = (Resolve-Path build-demo-driver/Release/demo-driver.exe).Path
+          "resize 1540 950`nbutton 110`npage 1`ninfo`n" | Set-Content init.txt -Encoding ascii
+          & $driver init.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Application was not ready' }
+          for ($page = 1; $page -le 3; $page++) {
+            $names = @('01-math.png', '02-physics.png', '03-chemistry.png')
+            $command = Get-Content "tools/demo/demo-page-$page.txt" -Raw
+            $command += "`ncapture docs/demo/$($names[$page-1])`n"
+            $command | Set-Content commands.txt -Encoding ascii
+            & $driver commands.txt
+            if ($LASTEXITCODE -ne 0) { throw "Screenshot $page failed" }
+          }
+          "close`n" | Set-Content close.txt -Encoding ascii
+          & $driver close.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: PDF-view-teaching-screenshots
+          path: docs/demo/*.png
+      - name: Publish the three screenshots on the demo branch
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/demo/*.png
+          git commit -m "docs: capture real Windows pen and highlighter demos"
+          git push origin HEAD:demo/teaching-screenshots

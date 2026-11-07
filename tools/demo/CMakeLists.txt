@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.20)
+project(PDFViewScreenshotDriver LANGUAGES CXX)
+add_executable(demo-driver driver.cpp)
+target_compile_features(demo-driver PRIVATE cxx_std_17)
+target_compile_definitions(demo-driver PRIVATE NOMINMAX UNICODE _UNICODE)
+target_link_libraries(demo-driver PRIVATE user32 gdi32 gdiplus comctl32)
