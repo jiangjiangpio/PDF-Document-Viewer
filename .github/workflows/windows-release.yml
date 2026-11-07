@@ -32,6 +32,15 @@ jobs:
             @('### Windows compiler diagnostics', '```text') + (Get-Content build-ci/build.log -Tail 160) + @('```') | Add-Content $env:GITHUB_STEP_SUMMARY
             exit $buildExit
           }
+      - name: Report Windows compiler errors
+        if: failure()
+        shell: pwsh
+        run: |
+          $messages = Get-ChildItem build-ci/*.log -ErrorAction SilentlyContinue | Select-String -Pattern 'error C[0-9]+|error LNK[0-9]+|fatal error|CMake Error|error RC[0-9]+' | Select-Object -First 15
+          foreach ($message in $messages) {
+            $text = $message.Line.Replace('%', '%25').Replace([string][char]13, '%0D').Replace([string][char]10, '%0A')
+            Write-Output "::error::$text"
+          }
       - name: Core, settings and native page renderer regression checks
         run: ctest --test-dir build-ci -C Release --output-on-failure --timeout 60
       - name: Exercise bundled Windows PDF engine
