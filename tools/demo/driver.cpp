@@ -15,11 +15,18 @@ int main(int argc,char**argv){
  cv=FindWindowExW(app,nullptr,L"PaperViewCanvas",nullptr);
  SetForegroundWindow(app);std::ifstream f(argv[1]);std::string cmd;
  while(f>>cmd){
-  if(cmd=="close"){PostMessageW(app,WM_CLOSE,0,0);Sleep(500);}
+  if(cmd=="display"){int w,h;f>>w>>h;DEVMODEW mode{};mode.dmSize=sizeof(mode);EnumDisplaySettingsW(nullptr,ENUM_CURRENT_SETTINGS,&mode);mode.dmPelsWidth=w;mode.dmPelsHeight=h;mode.dmFields=DM_PELSWIDTH|DM_PELSHEIGHT;LONG status=ChangeDisplaySettingsW(&mode,0);Sleep(1500);printf("Display change status=%ld, actual=%dx%d\n",status,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN));}
+  else if(cmd=="close"){PostMessageW(app,WM_CLOSE,0,0);Sleep(500);}
   else if(cmd=="resize"){int w,h;f>>w>>h;w=std::min(w,GetSystemMetrics(SM_CXSCREEN)-40);h=std::min(h,GetSystemMetrics(SM_CYSCREEN)-48);ShowWindow(app,SW_RESTORE);SetWindowPos(app,HWND_TOP,24,20,w,h,SWP_SHOWWINDOW);Sleep(700);}
   else if(cmd=="info"){RECT a{},r{};GetWindowRect(app,&a);GetClientRect(cv,&r);POINT o{};ClientToScreen(cv,&o);printf("app %ld %ld %ld %ld; canvas %ld %ld %ld %ld; zoom %.6f\n",a.left,a.top,a.right,a.bottom,o.x,o.y,r.right,r.bottom,(r.right-40.)/900.);}
   else if(cmd=="button"){int id;f>>id;PostMessageW(app,WM_COMMAND,id,0);Sleep(250);}
-  else if(cmd=="page"){f>>page;HWND e=GetDlgItem(app,116);click(e);SetWindowTextW(e,std::to_wstring(page).c_str());key(VK_RETURN);key(VK_RETURN,false);Sleep(800);}
+  else if(cmd=="page"){
+   f>>page;HWND tree=FindWindowExW(app,nullptr,WC_TREEVIEWW,nullptr);HTREEITEM item=TreeView_GetRoot(tree);
+   for(int p=1;p<page&&item;p++)item=TreeView_GetNextSibling(tree,item);
+   if(!tree||!item||!TreeView_SelectItem(tree,item))return 7;
+   Sleep(1200);wchar_t number[32]{};GetWindowTextW(GetDlgItem(app,116),number,32);printf("Page selected: requested=%d, displayed=%ls\n",page,number);
+   if(_wtoi(number)!=page)return 8;
+  }
   else if(cmd=="palette"){
    int color,width;f>>color>>width;PostMessageW(app,WM_COMMAND,103,0);HWND p=nullptr;
    for(int i=0;i<60&&!p;i++){Sleep(30);p=FindWindowW(L"PDFViewPenPalette",nullptr);}if(!p)return 3;

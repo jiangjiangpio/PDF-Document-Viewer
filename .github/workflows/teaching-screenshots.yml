@@ -30,7 +30,7 @@ jobs:
           $app = Start-Process -FilePath $exe -ArgumentList ('"' + $pdf + '"') -PassThru
           Start-Sleep -Seconds 8
           $driver = (Resolve-Path build-demo-driver/Release/demo-driver.exe).Path
-          "resize 1540 950`nbutton 110`npage 1`ninfo`n" | Set-Content init.txt -Encoding ascii
+          "display 1920 1080`nresize 1540 950`nbutton 110`npage 1`ninfo`n" | Set-Content init.txt -Encoding ascii
           & $driver init.txt
           if ($LASTEXITCODE -ne 0) { throw 'Application was not ready' }
           for ($page = 1; $page -le 3; $page++) {
