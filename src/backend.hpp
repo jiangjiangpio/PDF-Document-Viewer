@@ -3,10 +3,12 @@
 #define NOMINMAX
 #endif
 #include "core.hpp"
+#include "settings.hpp"
 #include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <windows.h>
 namespace paper {
@@ -22,7 +24,8 @@ struct DocumentInfo {
     std::vector<OutlineItem> outline;
     Snapshot saved;
     std::wstring warning;
-    bool writable = true;
+    bool writable = true, nativeOffice = false;
+    std::wstring officeEngine;
 };
 struct SearchHit {
     int page = 0;
@@ -32,7 +35,9 @@ struct PdfError : std::runtime_error {
     unsigned long code;
     PdfError(std::string text, unsigned long c = 0) : runtime_error(text), code(c) {}
 };
+class OfficePageBackend;
 class PdfBackend {
+    std::unique_ptr<OfficePageBackend> office_;
     struct FileAccess {
         unsigned long length;
         int(__cdecl *read)(void *, unsigned long, unsigned char *, unsigned long);
@@ -70,7 +75,7 @@ class PdfBackend {
     explicit PdfBackend(const std::filesystem::path &dll);
     ~PdfBackend();
     DocumentInfo open(int id, const std::wstring &path, const std::string &password,
-                      const std::function<bool()> &cancel);
+                      const std::function<bool()> &cancel, OfficeEngine engine = OfficeEngine::Auto);
     void close(int id);
     std::shared_ptr<Tile> render(TileKey key, const std::function<bool()> &cancel);
     std::vector<SearchHit> search(int id, const std::wstring &query, const std::function<bool()> &cancel);
@@ -103,6 +108,8 @@ class RenderScheduler {
     std::vector<RenderRequest> requests_;
     std::deque<WorkerResult> results_;
     std::atomic<bool> stop_{false};
+    std::set<int> closed_;
+    bool openingCancelled(int id);
     std::atomic<uint64_t> generation_{0}, searchGeneration_{0};
     void run();
     void emit(WorkerResult result);
@@ -112,7 +119,7 @@ class RenderScheduler {
     static constexpr UINT ReadyMessage = WM_APP + 10;
     RenderScheduler(HWND window, std::filesystem::path dll, std::filesystem::path storage);
     ~RenderScheduler();
-    void open(int id, std::wstring path, std::string password = {});
+    void open(int id, std::wstring path, std::string password = {}, OfficeEngine engine = OfficeEngine::Auto);
     void close(int id);
     void request(std::vector<RenderRequest> tiles);
     void search(int id, std::wstring query, uint64_t token);
@@ -143,6 +150,8 @@ class SaveService {
     void save(int id, std::string key, Snapshot snapshot, uint64_t revision);
     std::deque<WorkerResult> take();
 };
+std::string hashText(const std::string &text);
+std::string hashFile(const std::filesystem::path &, const std::function<bool()> &cancel);
 std::filesystem::path executableDirectory();
 std::filesystem::path storageDirectory();
 std::wstring utf16(const std::string &);

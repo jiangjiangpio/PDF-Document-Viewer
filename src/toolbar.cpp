@@ -138,11 +138,27 @@ void ToolbarPainter::icon(ToolbarIcon i, uint32_t accent) {
         line(3, 3, 10, 10);
         line(14, 14, 21, 21);
         break;
-    case ToolbarIcon::Help:
-        target_->DrawEllipse(D2D1::Ellipse({12, 12}, 9, 9), brush_, 1.5f);
-        path({{9, 9}, {9, 8}, {12, 7}, {15, 9}, {15, 10}, {12, 12}, {12, 14}});
-        target_->FillEllipse(D2D1::Ellipse({12, 17}, .85f, .85f), brush_);
+    case ToolbarIcon::Settings: {
+        std::vector<D2D1_POINT_2F> teeth;
+        for (int i = 0; i < 48; i++) {
+            float angle = float(i) * 6.2831853f / 48.f;
+            float radius = (i % 6 == 0 || i % 6 == 5) ? 8.f : 10.f;
+            teeth.push_back({12 + radius * std::cos(angle), 12 + radius * std::sin(angle)});
+        }
+        ID2D1PathGeometry *p = nullptr;
+        ID2D1GeometrySink *sink = nullptr;
+        if (SUCCEEDED(factory_->CreatePathGeometry(&p)) && SUCCEEDED(p->Open(&sink))) {
+            sink->BeginFigure(teeth[0], D2D1_FIGURE_BEGIN_HOLLOW);
+            sink->AddLines(teeth.data() + 1, (UINT32)teeth.size() - 1);
+            sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            sink->Close();
+            target_->DrawGeometry(p, brush_, 1.3f, style_);
+        }
+        release(sink);
+        release(p);
+        target_->DrawEllipse(D2D1::Ellipse({12, 12}, 3.5f, 3.5f), brush_, 1.5f);
         break;
+    }
     case ToolbarIcon::Save:
         path({{4, 3}, {17, 3}, {21, 7}, {21, 21}, {3, 21}, {3, 3}}, true);
         path({{7, 3}, {7, 9}, {16, 9}, {16, 3}});

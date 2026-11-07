@@ -1,26 +1,31 @@
 # PDF view
 
-[下载 Windows 64 位安装包（Setup.exe）](downloads/PDF-view-Setup-0.3.1-x64.exe?raw=true)
+Windows 10 x64 的本地 PDF / DOC / DOCX 阅读与批注工具。
 
-0.3.1：修复拖动粗细滑块时色块与滑块闪烁；色块改用按 DPI 重新绘制的抗锯齿矢量圆，拖动时仅更新笔迹预览。
+[下载 0.4.0 安装包](downloads/PDF-view-Setup-0.4.0-x64.exe?raw=true) · [使用说明](docs/USER_GUIDE.zh-CN.md)
 
-面向 Windows 10 的本地 PDF 阅读与批注工具：Edge 风格工具栏、目录与缩略图、多标签、绘制开关、鼠标与触控笔迹、双指移动缩放、整笔橡皮、撤销重做、搜索及自动保存。无打印功能，原始 PDF 不变。
+DOC/DOCX 需要桌面版 Microsoft Word 或兼容 WPS。默认原生模式由 Office 排版，直接绘制页面，不生成中间 PDF；PDF 转换保留为显式可选模式。两种方式都在软件内打开，都能使用现有画笔、荧光笔、橡皮、撤销重做和本地自动保存。原文档不变。
 
-采用 C++20、Win32、Direct2D、PDFium。文档模型、坐标变换、手势、存储、后台渲染调度和缓存由独立对象负责。使用按需分块渲染、过时任务取消和有界缓存。批注存储在本机原子替换文件中。
+齿轮设置支持自动侧边栏、会话恢复、滚动虚化等级、滑动灵敏度、Word 打开方式、转换引擎与快捷键绑定。原生 Word 查找目前按匹配页定位。字体、旧公式组件依赖本机 Office，详见使用说明。
+
+实现采用 C++20、Win32、Direct2D、PDFium 与 Office 原生页面绘制接口；分块渲染、有界缓存和过时任务取消。Word 原生渲染、可选转换、设置与持久化分别由独立对象负责。
 
 ## 构建
 
-Linux 需要 Python 3、MinGW-w64 x64 POSIX 编译器和 NSIS。
+Linux 需要 Python 3、MinGW-w64 x64 POSIX 与 NSIS：
 
 ```sh
 python3 scripts/fetch_pdfium.py
 python3 scripts/build_windows.py
 ```
 
-输出 `artifacts/PDF-view-Setup-0.3.1-x64.exe`。非系统安装的工具链可传 `--toolchain-root`。
+输出 `artifacts/PDF-view-Setup-0.4.0-x64.exe`；可传 `--toolchain-root`。
+Windows 可直接通过 CMake/MSVC 构建；GitHub Actions 在 Windows 上测试、打包，推送版本标签时发布带 setup 的 Release。
 
-核心测试：`cmake -S . -B build-native && cmake --build build-native && ctest --test-dir build-native --output-on-failure`。
+```sh
+cmake -S . -B build-native
+cmake --build build-native
+ctest --test-dir build-native --output-on-failure
+```
 
-测试样例生成脚本需要 reportlab、pypdf、Pillow。Windows 程序可通过 `PaperView.exe --self-test sample.pdf output-directory` 验证实际 PDF 引擎。GUI 冒烟脚本依赖测试环境中的 Wine、Xvfb 和 xdotool；先将 `tests/windows_ui_probe.cpp` 用 MinGW 编译为 `build-windows/windows_ui_probe.exe`，以原生窗口 API 验证窄窗口布局。
-
-见 [使用说明](docs/USER_GUIDE.zh-CN.md)。真实 Win10 触控和目标硬件性能仍需实机验收。
+Windows 额外运行 `native_office_smoke` 和 `settings_ui_smoke`。原生渲染回归使用模拟 Office 自动化对象返回真实原生页面绘图数据，检查只读加载、分页、绘制、旋转、查找与批注存取，不替代真实 Word/WPS 的公式及触屏验收。

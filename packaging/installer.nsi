@@ -7,7 +7,7 @@ Unicode true
  !define PAYLOAD "../build-windows/package"
 !endif
 !ifndef OUTPUT
- !define OUTPUT "../artifacts/PDF-view-Setup-0.3.1-x64.exe"
+ !define OUTPUT "../artifacts/PDF-view-Setup-0.4.0-x64.exe"
 !endif
 Name "PDF view"
 OutFile "${OUTPUT}"
@@ -17,14 +17,14 @@ RequestExecutionLevel user
 SetCompressor /SOLID lzma
 Icon "app.ico"
 UninstallIcon "app.ico"
-VIProductVersion "0.3.1.0"
+VIProductVersion "0.4.0.0"
 VIAddVersionKey /LANG=2052 "LegalCopyright" "PaperView contributors"
 VIAddVersionKey /LANG=2052 "ProductName" "PDF view"
 VIAddVersionKey /LANG=2052 "FileDescription" "PDF view Windows x64 安装程序"
-VIAddVersionKey /LANG=2052 "FileVersion" "0.3.1"
+VIAddVersionKey /LANG=2052 "FileVersion" "0.4.0"
 !define MUI_ABORTWARNING
 !define MUI_WELCOMEPAGE_TITLE "安装 PDF view"
-!define MUI_WELCOMEPAGE_TEXT "适用于 Windows 10 / 11 的本地 PDF 阅读器。支持触控、多标签和自动保存批注。安装不需要管理员权限。"
+!define MUI_WELCOMEPAGE_TEXT "适用于 Windows 10 / 11 的本地 PDF / Word 阅读器。支持触控、多标签和自动保存批注。DOC/DOCX 需要已安装桌面版 Microsoft Word 或 WPS。安装不需要管理员权限。"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\PaperView.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "打开 PDF view"
 !insertmacro MUI_PAGE_WELCOME
@@ -71,13 +71,19 @@ Section "PaperView" SEC_MAIN
  CreateShortcut "$DESKTOP\PDF view.lnk" "$INSTDIR\PaperView.exe"
  WriteRegStr HKCU "Software\PaperView" "InstallDir" "$INSTDIR"
  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PaperView" "DisplayName" "PDF view"
- WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PaperView" "DisplayVersion" "0.3.1"
+ WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PaperView" "DisplayVersion" "0.4.0"
  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PaperView" "DisplayIcon" "$INSTDIR\PaperView.exe"
  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PaperView" "UninstallString" '"$INSTDIR\Uninstall.exe"'
  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PaperView" "NoModify" 1
  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PaperView" "NoRepair" 1
  WriteRegStr HKCU "Software\Classes\Applications\PaperView.exe\shell\open\command" "" '"$INSTDIR\PaperView.exe" "%1"'
  WriteRegStr HKCU "Software\Classes\Applications\PaperView.exe\SupportedTypes" ".pdf" ""
+ WriteRegStr HKCU "Software\Classes\Applications\PaperView.exe\SupportedTypes" ".doc" ""
+ WriteRegStr HKCU "Software\Classes\Applications\PaperView.exe\SupportedTypes" ".docx" ""
+ WriteRegStr HKCU "Software\Classes\PaperView.WordDocument" "" "Word 文档（PDF view）"
+ WriteRegStr HKCU "Software\Classes\PaperView.WordDocument\shell\open\command" "" '"$INSTDIR\PaperView.exe" "%1"'
+ WriteRegStr HKCU "Software\Classes\.doc\OpenWithProgids" "PaperView.WordDocument" ""
+ WriteRegStr HKCU "Software\Classes\.docx\OpenWithProgids" "PaperView.WordDocument" ""
  WriteRegStr HKCU "Software\Classes\PaperView.PDF" "" "PDF 文档（PDF view）"
  WriteRegStr HKCU "Software\Classes\PaperView.PDF\shell\open\command" "" '"$INSTDIR\PaperView.exe" "%1"'
  WriteRegStr HKCU "Software\Classes\.pdf\OpenWithProgids" "PaperView.PDF" ""
@@ -106,6 +112,9 @@ Section "Uninstall"
  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PaperView"
  DeleteRegKey HKCU "Software\Classes\Applications\PaperView.exe"
  DeleteRegKey HKCU "Software\Classes\PaperView.PDF"
+ DeleteRegKey HKCU "Software\Classes\PaperView.WordDocument"
+ DeleteRegValue HKCU "Software\Classes\.doc\OpenWithProgids" "PaperView.WordDocument"
+ DeleteRegValue HKCU "Software\Classes\.docx\OpenWithProgids" "PaperView.WordDocument"
  DeleteRegValue HKCU "Software\Classes\.pdf\OpenWithProgids" "PaperView.PDF"
  DeleteRegKey HKCU "Software\PaperView"
  ; Intentionally preserve user annotations under LocalAppData\PaperView.

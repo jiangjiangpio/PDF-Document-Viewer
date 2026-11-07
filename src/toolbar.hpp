@@ -18,7 +18,7 @@ enum class ToolbarIcon {
     Search,
     Close,
     Fullscreen,
-    Help,
+    Settings,
     Save,
     Outline,
     Thumbnails,

@@ -22,6 +22,7 @@ int selfTest(const std::filesystem::path &path, const std::filesystem::path &out
     std::filesystem::create_directories(output);
     std::ofstream report(output / L"report.txt");
     try {
+        automation::MessageFilterScope messages;
         PdfBackend backend(executableDirectory() / L"pdfium.dll");
         auto start = GetTickCount64();
         auto doc = backend.open(1, path.wstring(), "", [] { return false; });
@@ -77,7 +78,7 @@ int selfTest(const std::filesystem::path &path, const std::filesystem::path &out
             restored.view.rotation != 1)
             throw std::runtime_error("Annotation persistence failed");
         backend.close(1);
-        auto copy = output / L"renamed.pdf";
+        auto copy = output / (L"renamed" + path.extension().wstring());
         std::filesystem::copy_file(path, copy, std::filesystem::copy_options::overwrite_existing);
         auto renamed = backend.open(2, copy.wstring(), "", [] { return false; });
         if (renamed.fingerprint != doc.fingerprint)
@@ -94,16 +95,21 @@ int selfTest(const std::filesystem::path &path, const std::filesystem::path &out
 } // namespace paper
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    OleInitialize(nullptr);
     int argc = 0;
     LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     std::vector<std::wstring> args;
     for (int i = 1; i < argc; ++i)
         args.emplace_back(argv[i]);
     LocalFree(argv);
+    if (args.size() == 4 && args[0] == L"--export-office-pdf") {
+        int result = paper::exportOfficePdf(args[1], args[2], (paper::OfficeEngine)_wtoi(args[3].c_str()));
+        OleUninitialize();
+        return result;
+    }
     if (args.size() >= 3 && args[0] == L"--self-test") {
         int result = paper::selfTest(args[1], args[2]);
-        CoUninitialize();
+        OleUninitialize();
         return result;
     }
     HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\PaperView.Application.v1");
@@ -120,7 +126,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
             SetForegroundWindow(first);
         }
         CloseHandle(mutex);
-        CoUninitialize();
+        OleUninitialize();
         return 0;
     }
     int result = 0;
@@ -133,6 +139,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     }
     if (mutex)
         CloseHandle(mutex);
-    CoUninitialize();
+    OleUninitialize();
     return result;
 }

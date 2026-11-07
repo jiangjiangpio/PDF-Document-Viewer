@@ -1,13 +1,16 @@
 #pragma once
 #include "backend.hpp"
+#include "office.hpp"
+#include "office_convert.hpp"
 #include "renderer.hpp"
+#include "settings_dialog.hpp"
 #include "toolbar.hpp"
 #include <commctrl.h>
 #include <set>
 namespace paper {
 struct DocumentSession {
     int id;
-    std::wstring path;
+    std::wstring path, renderPath;
     std::shared_ptr<DocumentInfo> info;
     ViewportController view;
     AnnotationDocument annotations;
@@ -76,6 +79,14 @@ class AppWindow {
     std::unique_ptr<CanvasRenderer> renderer_;
     std::unique_ptr<RenderScheduler> scheduler_;
     std::unique_ptr<SaveService> saver_;
+    AppSettings settings_;
+    std::unique_ptr<OfficePdfService> officePdf_;
+    void processOfficePdf();
+    int previewScale() const {
+        return -std::array<int, 4>{1440, 720, 480, 320}[settings_.blurLevel];
+    }
+    void editSettings();
+    void refreshShortcutHints();
     InputController input_;
     std::optional<Stroke> live_;
     std::set<uint64_t> eraseIds_;

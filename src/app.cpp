@@ -123,7 +123,8 @@ AppWindow::AppWindow()
                             [this] { commitStroke(); }, [this] { cancelStroke(); },
                             [this](Point d) {
                                 if (auto *s = active()) {
-                                    s->view.pan(d);
+                                    s->view.pan({d.x * settings_.scrollSensitivity,
+                                                 d.y * settings_.scrollSensitivity});
                                     refresh(true);
                                     viewChanged();
                                 }
@@ -137,6 +138,7 @@ AppWindow::AppWindow()
                                 }
                             }}) {}
 AppWindow::~AppWindow() {
+    officePdf_.reset();
     scheduler_.reset();
     saver_.reset();
     renderer_.reset();
@@ -177,7 +179,7 @@ int AppWindow::run(HINSTANCE instance, int show, const std::vector<std::wstring>
         throw std::runtime_error("Cannot create application window");
     ShowWindow(window_, show);
     UpdateWindow(window_);
-    if (paths.empty())
+    if (paths.empty() && settings_.restoreSession)
         loadSession();
     else
         for (auto &p : paths)
@@ -194,6 +196,14 @@ int AppWindow::run(HINSTANCE instance, int show, const std::vector<std::wstring>
 void AppWindow::createControls() {
     dpi_ = GetDpiForWindow(window_);
     storage_ = storageDirectory();
+    try {
+        settings_ = SettingsRepository(storage_.parent_path() / L"settings.txt").load();
+    } catch (const std::exception &e) {
+        MessageBoxW(window_,
+                    (L"设置读取失败，本次使用默认设置。原设置文件不会自动覆盖。\n" + utf16(e.what())).c_str(),
+                    L"设置", MB_ICONWARNING);
+    }
+    sidebar_ = settings_.openSidebar;
     tabs_ = CreateWindowExW(0, WC_TABCONTROLW, L"",
                             WS_CHILD | WS_VISIBLE | WS_TABSTOP | TCS_TOOLTIPS | TCS_OWNERDRAWFIXED |
                                 TCS_FIXEDWIDTH,
@@ -240,15 +250,15 @@ void AppWindow::createControls() {
         WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_NUMBER | ES_CENTER | ES_AUTOHSCROLL, 0, 0, 0, 0,
         window_, reinterpret_cast<HMENU>(PageEdit), nullptr, nullptr);
     toolbar_.emplace_back(PageEdit, 46);
-    controls_[PageTotal] = CreateWindowExW(0, L"STATIC", L" / 0", WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE, 0, 0,
-                                           0, 0, window_, nullptr, nullptr, nullptr);
+    controls_[PageTotal] = CreateWindowExW(0, L"STATIC", L" / 0", WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE, 0,
+                                           0, 0, 0, window_, nullptr, nullptr, nullptr);
     toolbar_.emplace_back(PageTotal, 56);
     button(Rotate, L"旋转", ToolbarIcon::Rotate, L"顺时针旋转 90°");
     button(Find, L"搜索", ToolbarIcon::Search, L"搜索文字 (Ctrl+F)");
     button(Save, L"保存", ToolbarIcon::Save, L"保存本机批注 (Ctrl+S)");
     button(CloseTab, L"关闭页签", ToolbarIcon::Close, L"关闭当前标签页 (Ctrl+W)");
     button(Fullscreen, L"全屏", ToolbarIcon::Fullscreen, L"全屏 (F11)");
-    button(Help, L"帮助", ToolbarIcon::Help, L"帮助与快捷键");
+    button(Help, L"设置", ToolbarIcon::Settings, L"设置：阅读、性能、Word/WPS 与快捷键");
     controls_[SearchEdit] =
         CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 0, 0,
                         window_, reinterpret_cast<HMENU>(SearchEdit), nullptr, nullptr);
@@ -287,8 +297,9 @@ void AppWindow::createControls() {
                                   LBS_NOINTEGRALHEIGHT,
                               0, 0, 0, 0, window_, reinterpret_cast<HMENU>(99), nullptr, nullptr);
     SendMessageW(thumbs_, LB_SETITEMHEIGHT, 0, px(170));
-    canvas_ = CreateWindowExW(0, L"PaperViewCanvas", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP, 0,
-                              0, 0, 0, window_, nullptr, nullptr, this);
+    canvas_ = CreateWindowExW(0, L"PaperViewCanvas", L"",
+                              WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP | WS_CLIPCHILDREN, 0, 0, 0, 0,
+                              window_, nullptr, nullptr, this);
     status_ = CreateWindowExW(0, L"STATIC", L"打开 PDF，开始阅读与批注",
                               WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE, 0, 0, 0, 0, window_, nullptr,
                               nullptr, nullptr);
@@ -298,7 +309,9 @@ void AppWindow::createControls() {
     renderer_ = std::make_unique<CanvasRenderer>(canvas_);
     scheduler_ = std::make_unique<RenderScheduler>(window_, executableDirectory() / L"pdfium.dll", storage_);
     saver_ = std::make_unique<SaveService>(window_, storage_);
+    officePdf_ = std::make_unique<OfficePdfService>(window_, storage_.parent_path() / L"office-pdf-cache-v1");
     updateFont();
+    refreshShortcutHints();
     SetTimer(window_, 3, 500, nullptr);
     layout();
     updateUi();
@@ -429,13 +442,20 @@ void AppWindow::populateSidebar() {
     SendMessageW(thumbs_, LB_SETCURSEL, s->view.currentPage(), 0);
 }
 void AppWindow::updateUi() {
-    auto setText = [](HWND w, const std::wstring &text) { if (windowText(w) != text) SetWindowTextW(w, text.c_str()); };
-    auto enable = [](HWND w, bool value) { if (bool(IsWindowEnabled(w)) != value) EnableWindow(w, value); };
+    auto setText = [](HWND w, const std::wstring &text) {
+        if (windowText(w) != text)
+            SetWindowTextW(w, text.c_str());
+    };
+    auto enable = [](HWND w, bool value) {
+        if (bool(IsWindowEnabled(w)) != value)
+            EnableWindow(w, value);
+    };
     auto *s = active();
     bool ready = s && !s->loading && s->info;
     for (auto [id, w] : toolbar_)
         if (id != Open && id != Sidebar && id != Help && id != Fullscreen && id != ZoomLabel &&
-            id != PageTotal && id != Undo && id != Redo && id != Draw && id != Palette && id != Marker && id != Eraser)
+            id != PageTotal && id != Undo && id != Redo && id != Draw && id != Palette && id != Marker &&
+            id != Eraser)
             enable(controls_[id], ready || (id == CloseTab && s));
     for (int id : {Draw, Palette, Marker, Eraser})
         enable(controls_[id], ready && s->info->writable);
@@ -445,9 +465,11 @@ void AppWindow::updateUi() {
         setText(controls_[PageEdit], ready ? std::to_wstring(s->view.currentPage() + 1).c_str() : L"");
     setText(controls_[PageTotal], ready ? (L" / " + std::to_wstring(s->view.count())).c_str() : L" / 0");
     setText(controls_[ZoomLabel],
-                   ready ? (std::to_wstring(static_cast<int>(std::lround(s->view.zoom * 100))) + L"%").c_str()
-                         : L"—");
+            ready ? (std::to_wstring(static_cast<int>(std::lround(s->view.zoom * 100))) + L"%").c_str()
+                  : L"—");
     std::wstring status = s ? s->status : L"打开 PDF，开始阅读与批注 · Ctrl+O 打开 · F11 全屏";
+    if (ready && isOfficeDocument(s->path))
+        status = (s->info->nativeOffice ? L"Word 原生阅读 · " : L"Word PDF兼容阅读 · ") + status;
     if (ready) {
         status += L"    ";
         status += drawing_ ? (tool_ == Tool::Eraser   ? L"橡皮：整笔擦除"
@@ -455,11 +477,12 @@ void AppWindow::updateUi() {
                                                       : L"画笔：单指绘制 / 双指移动缩放")
                            : L"阅读：单指拖动 / 双指缩放";
         if (!s->hits.empty())
-            status +=
-                L"    搜索 " + std::to_wstring(s->hitIndex + 1) + L" / " + std::to_wstring(s->hits.size());
+            status += (s->info->nativeOffice ? L"    匹配页 " : L"    搜索 ") +
+                      std::to_wstring(s->hitIndex + 1) + L" / " + std::to_wstring(s->hits.size());
     }
     setText(status_, status.c_str());
-    const unsigned state = unsigned(drawing_) | (unsigned(tool_) << 1) | (unsigned(sidebar_) << 4) | (unsigned(thumbnails_) << 5);
+    const unsigned state = unsigned(drawing_) | (unsigned(tool_) << 1) | (unsigned(sidebar_) << 4) |
+                           (unsigned(thumbnails_) << 5);
     if (state != toolbarState_) {
         toolbarState_ = state;
         for (int id : {Draw, Marker, Eraser, Sidebar, OutlineTab, ThumbnailTab})
@@ -481,8 +504,9 @@ void AppWindow::updateUi() {
 }
 void AppWindow::activate(int index) {
     input_.cancel();
-    if (auto *old = active())
+    if (auto *old = active()) {
         save(*old);
+    }
     active_ = index;
     TabCtrl_SetCurSel(tabs_, index);
     SetWindowTextW(window_, L"PDF view");
@@ -509,6 +533,12 @@ void AppWindow::openFile(const std::wstring &path) {
             activate(static_cast<int>(i));
             return;
         }
+    if (!isSupportedDocument(full)) {
+        MessageBoxW(window_, L"支持打开 PDF、Word / WPS 的 DOC 和 DOCX 文档。", L"不支持的格式",
+                    MB_ICONINFORMATION);
+        return;
+    }
+    sidebar_ = settings_.openSidebar;
     int id = nextId_++;
     documents_.push_back(std::make_unique<DocumentSession>(id, full));
     std::wstring name = std::filesystem::path(full).filename().wstring();
@@ -517,7 +547,14 @@ void AppWindow::openFile(const std::wstring &path) {
     item.pszText = name.data();
     TabCtrl_InsertItem(tabs_, static_cast<int>(documents_.size()) - 1, &item);
     activate(static_cast<int>(documents_.size()) - 1);
-    scheduler_->open(id, full);
+    if (isOfficeDocument(full) && settings_.officePdfMode) {
+        byId(id)->status = L"正在以 PDF 兼容模式打开…";
+        officePdf_->open(id, full, settings_.officeEngine);
+        updateUi();
+    } else {
+        documents_.back()->renderPath = full;
+        scheduler_->open(id, full, {}, settings_.officeEngine);
+    }
 }
 void AppWindow::closeTab(int index) {
     if (index < 0 || index >= static_cast<int>(documents_.size()))
@@ -541,6 +578,7 @@ void AppWindow::closeTab(int index) {
     if (s.saveFailed && MessageBoxW(window_, L"批注保存失败。仍然关闭此标签页会丢失未保存的修改。是否关闭？",
                                     L"批注未保存", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
         return;
+    officePdf_->cancel(s.id);
     scheduler_->close(s.id);
     cache_.removeDocument(s.id);
     renderer_->clearDocument(s.id);
@@ -560,7 +598,8 @@ void AppWindow::openDialog() {
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = window_;
-    ofn.lpstrFilter = L"PDF 文档 (*.pdf)\0*.pdf\0所有文件\0*.*\0";
+    ofn.lpstrFilter = L"支持的文档 (*.pdf;*.doc;*.docx)\0*.pdf;*.doc;*.docx\0PDF 文档\0*.pdf\0Word / WPS "
+                      L"文档\0*.doc;*.docx\0所有文件\0*.*\0";
     ofn.lpstrFile = buffer.data();
     ofn.nMaxFile = static_cast<DWORD>(buffer.size());
     ofn.Flags = OFN_EXPLORER | OFN_ALLOWMULTISELECT | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
@@ -595,7 +634,7 @@ void AppWindow::refresh(bool interacting) {
         interactionUntil_ = GetTickCount64() + 140;
         SetTimer(window_, 1, 150, nullptr);
     }
-    schedule(interacting);
+    schedule(interacting && settings_.blurLevel != 0);
     InvalidateRect(canvas_, nullptr, FALSE);
     updateUi();
 }
@@ -614,7 +653,7 @@ void AppWindow::schedule(bool previewOnly) {
     int scale = std::max(1, static_cast<int>(std::lround(s->view.zoom * 64)));
     for (int page : s->view.visible(80)) {
         auto r = s->view.pageRect(page);
-        add({s->id, page, -1, s->view.rotation, 0, 0}, 0);
+        add({s->id, page, previewScale(), s->view.rotation, 0, 0}, 0);
         if (!previewOnly) {
             double factor = (scale / 64.) / s->view.zoom;
             int x0 = std::max(0, static_cast<int>(std::floor(-r.x * factor / 512))),
@@ -647,10 +686,10 @@ void AppWindow::paint() {
         auto *s = active();
         if (!s) {
             renderer_->text(L"PDF view", {60, 65, 600, 40}, 0x1e293b);
-            renderer_->text(
-                L"将 PDF 拖到窗口，或点击左上角文件夹图标\n\n顶部“绘制”按钮开启手写批注\n单指书写 · "
-                L"双指移动和缩放\n\n批注自动保存在这台电脑中",
-                {60, 120, 750, 300});
+            renderer_->text(L"将 PDF、DOC 或 DOCX "
+                            L"拖到窗口，或点击左上角文件夹图标\n\n顶部“绘制”按钮开启手写批注\n单指书写 · "
+                            L"双指移动和缩放\n\n批注自动保存在这台电脑中",
+                            {60, 120, 750, 300});
         } else if (s->loading)
             renderer_->text(L"正在打开文档…", {60, 70, 650, 80});
         else if (s->info) {
@@ -660,7 +699,7 @@ void AppWindow::paint() {
                 renderer_->fill({r.x + 3, r.y + 3, r.w, r.h}, 0xcbd0d8);
                 renderer_->fill(r, 0xffffff);
                 renderer_->pushClip(r);
-                TileKey preview{s->id, p, -1, s->view.rotation, 0, 0};
+                TileKey preview{s->id, p, previewScale(), s->view.rotation, 0, 0};
                 auto low = cache_.get(preview);
                 if (low)
                     renderer_->bitmap(preview, low, r);
@@ -833,6 +872,9 @@ void AppWindow::processResults() {
             s->view.restore(r.info->saved.view);
             s->annotations.restore(r.info->saved.pages);
             s->status = r.info->writable ? L"本地批注已就绪" : L"批注数据异常：只读";
+            if (r.info->nativeOffice)
+                s->status += L" · " + r.info->officeEngine + L" 原生页面 · 支持手写批注";
+
             if (s == active()) {
                 if (r.info->outline.empty())
                     thumbnails_ = true;
@@ -850,11 +892,12 @@ void AppWindow::processResults() {
                 if (r.errorCode == 4) {
                     auto password = prompt(window_, L"受密码保护的 PDF", L"请输入文档打开密码", true);
                     if (password) {
-                        scheduler_->open(s->id, s->path, utf8(*password));
+                        scheduler_->open(s->id, s->renderPath, utf8(*password));
                         break;
                     }
                 } else {
-                    std::wstring error = L"无法打开此 PDF。";
+                    std::wstring error =
+                        isOfficeDocument(s->path) ? L"无法原生打开 Word / WPS 文档。" : L"无法打开此 PDF。";
                     if (r.errorCode == 2)
                         error += L"请确认文件存在且可以读取。";
                     else if (r.errorCode == 3)
@@ -928,6 +971,70 @@ void AppWindow::processResults() {
         }
     }
     updateUi();
+}
+void AppWindow::processOfficePdf() {
+    for (auto &result : officePdf_->take()) {
+        auto *s = byId(result.id);
+        if (!s)
+            continue;
+        if (!result.error.empty()) {
+            MessageBoxW(window_, result.error.c_str(), L"PDF 兼容阅读失败", MB_ICONERROR);
+            for (size_t i = 0; i < documents_.size(); ++i)
+                if (documents_[i].get() == s) {
+                    closeTab((int)i);
+                    break;
+                }
+        } else {
+            s->renderPath = result.pdfPath;
+            s->status = L"加载 PDF 兼容视图…";
+            scheduler_->open(s->id, s->renderPath);
+            updateUi();
+        }
+    }
+}
+void AppWindow::refreshShortcutHints() {
+    for (auto [id, action] : std::vector<std::pair<int, Action>>{{Open, Action::Open},
+                                                                 {Find, Action::Find},
+                                                                 {Save, Action::Save},
+                                                                 {CloseTab, Action::CloseTab},
+                                                                 {Undo, Action::Undo},
+                                                                 {Redo, Action::Redo},
+                                                                 {Fit, Action::Fit},
+                                                                 {ZoomIn, Action::ZoomIn},
+                                                                 {ZoomOut, Action::ZoomOut},
+                                                                 {Fullscreen, Action::Fullscreen},
+                                                                 {Draw, Action::Draw},
+                                                                 {Sidebar, Action::Sidebar},
+                                                                 {Help, Action::Settings}}) {
+        tooltipText_[id] =
+            AppSettings::actionName(action) + L" (" + shortcutLabel(settings_.bindings[(int)action]) + L")";
+        if (id == Draw)
+            tooltipText_[id] += L" · 单指/鼠标书写，双指移动缩放";
+        TOOLINFOW info{sizeof(info)};
+        info.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+        info.hwnd = window_;
+        info.uId = (UINT_PTR)controls_[id];
+        info.lpszText = tooltipText_[id].data();
+        SendMessageW(tooltips_, TTM_UPDATETIPTEXTW, 0, (LPARAM)&info);
+    }
+}
+void AppWindow::editSettings() {
+    input_.cancel();
+    auto changed = settings_;
+    if (!showSettingsDialog(window_, changed))
+        return;
+    try {
+        SettingsRepository(storage_.parent_path() / L"settings.txt").save(changed);
+    } catch (const std::exception &e) {
+        MessageBoxW(window_, (L"设置保存失败，未应用更改。\n" + utf16(e.what())).c_str(), L"设置",
+                    MB_ICONERROR);
+        return;
+    }
+    settings_ = changed;
+    refreshShortcutHints();
+    sidebar_ = settings_.openSidebar;
+    layout();
+    refresh();
 }
 void AppWindow::search() {
     auto *s = active();
@@ -1038,16 +1145,7 @@ void AppWindow::command(int id) {
         toggleFullscreen();
         return;
     case Help:
-        MessageBoxW(window_,
-                    L"PDF view 0.3.1\n\n打开：Ctrl+O，也可拖入 "
-                    L"PDF\n绘制按钮：开启／关闭手写\n荧光笔／橡皮：再次点击返回普通画笔\n单指：阅读时拖动，绘"
-                    L"制时书写\n双指：移动与缩放；会取消未提交的单指笔迹\n橡皮：整笔擦除\n搜索：Ctrl+F，F3 "
-                    L"下一个，Shift+F3 上一个\n撤销／重做：Ctrl+Z / Ctrl+Y\n缩放：Ctrl+滚轮，Ctrl+0 "
-                    L"适应宽度\n复制本页文字：Ctrl+Shift+C\n标签页：Ctrl+Tab 切换，Ctrl+W "
-                    L"关闭\n全屏：F11\n\n批注自动保存在本机，不改动原 "
-                    L"PDF。\n数据目录：%LOCALAPPDATA%\\PaperView\\annotations\n扫描图片的 "
-                    L"OCR、打印和批注导出不在本版范围。",
-                    L"使用帮助", MB_OK);
+        editSettings();
         return;
     case OutlineTab:
         thumbnails_ = false;
@@ -1314,12 +1412,13 @@ void AppWindow::shutdown() {
     KillTimer(window_, 1);
     KillTimer(window_, 2);
     KillTimer(window_, 3);
+    officePdf_.reset();
     scheduler_.reset();
     saver_.reset();
     DestroyWindow(window_);
 }
 bool AppWindow::key(MSG &m) {
-    if (m.message != WM_KEYDOWN)
+    if (m.message != WM_KEYDOWN && m.message != WM_SYSKEYDOWN)
         return false;
     bool ctrl = GetKeyState(VK_CONTROL) < 0, shift = GetKeyState(VK_SHIFT) < 0;
     auto *s = active();
@@ -1341,32 +1440,76 @@ bool AppWindow::key(MSG &m) {
         search();
         return true;
     }
-    if (ctrl && m.wParam == 'O') {
-        command(Open);
-        return true;
-    }
-    if (ctrl && m.wParam == 'F') {
-        if (!find_)
-            command(Find);
-        SetFocus(controls_[SearchEdit]);
-        SendMessageW(controls_[SearchEdit], EM_SETSEL, 0, -1);
-        return true;
-    }
-    if (ctrl && m.wParam == 'W') {
-        command(CloseTab);
-        return true;
-    }
-    if (ctrl && m.wParam == VK_TAB && !documents_.empty()) {
-        activate((active_ + (shift ? -1 : 1) + static_cast<int>(documents_.size())) %
-                 static_cast<int>(documents_.size()));
-        return true;
-    }
-    if (m.wParam == VK_F11) {
-        toggleFullscreen();
-        return true;
-    }
-    if (m.wParam == VK_F3) {
-        nextHit(shift ? -1 : 1);
+    auto shortcut = settings_.action({(unsigned)m.wParam, (unsigned)((ctrl ? 1 : 0) | (shift ? 2 : 0) |
+                                                                     (GetKeyState(VK_MENU) < 0 ? 4 : 0))});
+    if (shortcut) {
+        // Text boxes retain normal editing keys (copy/undo, etc.). Global document commands still work.
+        bool editing = focus == controls_[SearchEdit] || focus == controls_[PageEdit];
+        if (editing && *shortcut != Action::Open && *shortcut != Action::Find &&
+            *shortcut != Action::Settings && *shortcut != Action::Fullscreen)
+            return false;
+        switch (*shortcut) {
+        case Action::Open:
+            command(Open);
+            break;
+        case Action::Find:
+            if (!find_)
+                command(Find);
+            SetFocus(controls_[SearchEdit]);
+            SendMessageW(controls_[SearchEdit], EM_SETSEL, 0, -1);
+            break;
+        case Action::Save:
+            command(Save);
+            break;
+        case Action::CloseTab:
+            command(CloseTab);
+            break;
+        case Action::Undo:
+            command(Undo);
+            break;
+        case Action::Redo:
+            command(Redo);
+            break;
+        case Action::Fit:
+            command(Fit);
+            break;
+        case Action::ZoomIn:
+            command(ZoomIn);
+            break;
+        case Action::ZoomOut:
+            command(ZoomOut);
+            break;
+        case Action::Fullscreen:
+            command(Fullscreen);
+            break;
+        case Action::Draw:
+            command(Draw);
+            break;
+        case Action::Sidebar:
+            command(Sidebar);
+            break;
+        case Action::Settings:
+            command(Help);
+            break;
+        case Action::NextHit:
+            nextHit(1);
+            break;
+        case Action::PreviousHit:
+            nextHit(-1);
+            break;
+        case Action::NextTab:
+        case Action::PreviousTab:
+            if (!documents_.empty())
+                activate((active_ + (*shortcut == Action::PreviousTab ? -1 : 1) + (int)documents_.size()) %
+                         (int)documents_.size());
+            break;
+        case Action::CopyText:
+            if (s && s->info)
+                scheduler_->copyText(s->id, s->view.currentPage());
+            break;
+        default:
+            break;
+        }
         return true;
     }
     if (m.wParam == VK_ESCAPE) {
@@ -1384,39 +1527,6 @@ bool AppWindow::key(MSG &m) {
     }
     if (focus == controls_[SearchEdit] || focus == controls_[PageEdit])
         return false;
-    if (ctrl && m.wParam == 'S') {
-        if (s) {
-            s->dirty = true;
-            save(*s);
-            updateUi();
-        }
-        return true;
-    }
-    if (ctrl && m.wParam == 'Z') {
-        command(shift ? Redo : Undo);
-        return true;
-    }
-    if (ctrl && m.wParam == 'Y') {
-        command(Redo);
-        return true;
-    }
-    if (ctrl && m.wParam == '0') {
-        command(Fit);
-        return true;
-    }
-    if (ctrl && (m.wParam == VK_OEM_PLUS || m.wParam == VK_ADD)) {
-        command(ZoomIn);
-        return true;
-    }
-    if (ctrl && (m.wParam == VK_OEM_MINUS || m.wParam == VK_SUBTRACT)) {
-        command(ZoomOut);
-        return true;
-    }
-    if (ctrl && shift && m.wParam == 'C') {
-        if (s && s->info)
-            scheduler_->copyText(s->id, s->view.currentPage());
-        return true;
-    }
     if (s && s->info && focus == canvas_) {
         switch (m.wParam) {
         case VK_NEXT:
@@ -1461,7 +1571,8 @@ LRESULT CALLBACK AppWindow::WindowProc(HWND w, UINT m, WPARAM a, LPARAM b) {
 }
 LRESULT CALLBACK AppWindow::ButtonProc(HWND w, UINT m, WPARAM a, LPARAM b, UINT_PTR, DWORD_PTR data) {
     auto *self = reinterpret_cast<AppWindow *>(data);
-    if (m == WM_ERASEBKGND) return 1;
+    if (m == WM_ERASEBKGND)
+        return 1;
     if (m == WM_MOUSEMOVE && self->hotButton_ != w) {
         if (self->hotButton_)
             InvalidateRect(self->hotButton_, nullptr, FALSE);
@@ -1574,6 +1685,10 @@ LRESULT AppWindow::message(UINT m, WPARAM a, LPARAM b) {
         DragFinish(drop);
         return 0;
     }
+    case OfficePdfService::ReadyMessage:
+        if (officePdf_)
+            processOfficePdf();
+        return 0;
     case RenderScheduler::ReadyMessage:
         if (scheduler_ && saver_)
             processResults();
@@ -1633,7 +1748,8 @@ LRESULT AppWindow::message(UINT m, WPARAM a, LPARAM b) {
     return DefWindowProcW(window_, m, a, b);
 }
 LRESULT AppWindow::canvasMessage(UINT m, WPARAM a, LPARAM b) {
-    if (m == WM_MOUSEACTIVATE && paletteOpen_) return MA_ACTIVATEANDEAT;
+    if (m == WM_MOUSEACTIVATE && paletteOpen_)
+        return MA_ACTIVATEANDEAT;
     auto *s = active();
     switch (m) {
     case WM_ERASEBKGND:
@@ -1663,7 +1779,7 @@ LRESULT AppWindow::canvasMessage(UINT m, WPARAM a, LPARAM b) {
                 s->view.setZoom(s->view.zoom * std::pow(1.15, GET_WHEEL_DELTA_WPARAM(a) / 120.),
                                 {static_cast<double>(p.x), static_cast<double>(p.y)});
             } else
-                s->view.scrollY -= GET_WHEEL_DELTA_WPARAM(a) / 120. * px(120);
+                s->view.scrollY -= GET_WHEEL_DELTA_WPARAM(a) / 120. * px(120) * settings_.scrollSensitivity;
             s->view.clamp();
             refresh(true);
             viewChanged();
@@ -1671,7 +1787,7 @@ LRESULT AppWindow::canvasMessage(UINT m, WPARAM a, LPARAM b) {
         return 0;
     case WM_MOUSEHWHEEL:
         if (s) {
-            s->view.scrollX += GET_WHEEL_DELTA_WPARAM(a) / 120. * px(100);
+            s->view.scrollX += GET_WHEEL_DELTA_WPARAM(a) / 120. * px(100) * settings_.scrollSensitivity;
             s->view.clamp();
             refresh(true);
             viewChanged();

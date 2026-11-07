@@ -1,4 +1,5 @@
 #include "backend.hpp"
+#include "office.hpp"
 #include <bcrypt.h>
 #include <iomanip>
 #include <set>
@@ -37,6 +38,7 @@ std::filesystem::path storageDirectory() {
     return path / L"PaperView" / L"annotations";
 }
 PdfBackend::PdfBackend(const std::filesystem::path &dll) {
+    office_ = std::make_unique<OfficePageBackend>();
     library_ = LoadLibraryExW(dll.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!library_)
         throw PdfError("Cannot load bundled pdfium.dll");
@@ -55,6 +57,7 @@ PdfBackend::PdfBackend(const std::filesystem::path &dll) {
     }
 }
 PdfBackend::~PdfBackend() {
+    office_.reset();
     while (!documents_.empty())
         close(documents_.begin()->first);
     if (library_) {
@@ -110,6 +113,35 @@ static std::string fingerprint(HANDLE file, const std::function<bool()> &cancel)
         throw;
     }
 }
+std::string hashText(const std::string &text) {
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    unsigned char digest[32];
+    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0)
+        throw PdfError("SHA256 unavailable");
+    auto status = BCryptHash(algorithm, nullptr, 0, (PUCHAR)text.data(), (ULONG)text.size(), digest, 32);
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    if (status < 0)
+        throw PdfError("SHA256 failed");
+    std::ostringstream out;
+    for (auto byte : digest)
+        out << std::hex << std::setw(2) << std::setfill('0') << (int)byte;
+    return out.str();
+}
+std::string hashFile(const std::filesystem::path &path, const std::function<bool()> &cancel) {
+    HANDLE file =
+        CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        throw PdfError("Cannot read document", 2);
+    try {
+        auto result = fingerprint(file, cancel);
+        CloseHandle(file);
+        return result;
+    } catch (...) {
+        CloseHandle(file);
+        throw;
+    }
+}
 void PdfBackend::collectOutline(Document &d, void *parent, int depth, std::vector<OutlineItem> &items,
                                 std::vector<void *> &visited) {
     if (depth > 32 || items.size() >= 10000)
@@ -134,7 +166,9 @@ void PdfBackend::collectOutline(Document &d, void *parent, int depth, std::vecto
     }
 }
 DocumentInfo PdfBackend::open(int id, const std::wstring &path, const std::string &password,
-                              const std::function<bool()> &cancel) {
+                              const std::function<bool()> &cancel, OfficeEngine engine) {
+    if (isOfficeDocument(path))
+        return office_->open(id, path, engine, cancel);
     auto d = std::make_unique<Document>();
     d->file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                           FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -182,6 +216,10 @@ DocumentInfo PdfBackend::open(int id, const std::wstring &path, const std::strin
     }
 }
 void PdfBackend::close(int id) {
+    if (office_ && office_->contains(id)) {
+        office_->close(id);
+        return;
+    }
     for (auto p = pageCache_.begin(); p != pageCache_.end();)
         if (p->document == id) {
             FPDF_ClosePage(p->page);
@@ -213,13 +251,16 @@ void *PdfBackend::cachedPage(int document, int index) {
     return handle;
 }
 std::shared_ptr<Tile> PdfBackend::render(TileKey key, const std::function<bool()> &cancel) {
+    if (office_->contains(key.document))
+        return office_->render(key, cancel);
     auto it = documents_.find(key.document);
     if (it == documents_.end() || key.page < 0 || key.page >= static_cast<int>(it->second->sizes.size()) ||
         cancel())
         return {};
     auto &d = *it->second;
     Size s = PageTransform(d.sizes[key.page], key.rotation).extent();
-    double scale = key.scale < 0 ? std::min(1., 720. / std::max(s.w, s.h)) : key.scale / 64.;
+    double previewSize = key.scale <= -2 ? std::clamp(-key.scale, 240, 1440) : 720;
+    double scale = key.scale < 0 ? std::min(2., previewSize / std::max(s.w, s.h)) : key.scale / 64.;
     int fullW = std::max(1, static_cast<int>(std::ceil(s.w * scale))),
         fullH = std::max(1, static_cast<int>(std::ceil(s.h * scale)));
     int x = key.scale < 0 ? 0 : key.x * 512, y = key.scale < 0 ? 0 : key.y * 512;
@@ -265,6 +306,8 @@ std::shared_ptr<Tile> PdfBackend::render(TileKey key, const std::function<bool()
 }
 std::vector<SearchHit> PdfBackend::search(int id, const std::wstring &q,
                                           const std::function<bool()> &cancel) {
+    if (office_->contains(id))
+        return office_->search(id, q, cancel);
     std::vector<SearchHit> hits;
     auto it = documents_.find(id);
     if (it == documents_.end() || q.empty())
@@ -308,6 +351,8 @@ std::vector<SearchHit> PdfBackend::search(int id, const std::wstring &q,
     return hits;
 }
 std::wstring PdfBackend::text(int id, int index) {
+    if (office_->contains(id))
+        return office_->text(id, index);
     auto it = documents_.find(id);
     if (it == documents_.end())
         return {};
@@ -355,6 +400,15 @@ void RenderScheduler::enqueue(std::function<void(PdfBackend &)> f) {
     wake_.notify_one();
 }
 void RenderScheduler::run() {
+    struct Apartment {
+        Apartment() {
+            CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        }
+        ~Apartment() {
+            CoUninitialize();
+        }
+    } apartment;
+    automation::MessageFilterScope messages([this] { return stop_.load(); });
     try {
         PdfBackend pdf(dll_);
         while (!stop_) {
@@ -406,11 +460,15 @@ void RenderScheduler::run() {
         emit(std::move(r));
     }
 }
-void RenderScheduler::open(int id, std::wstring path, std::string password) {
-    enqueue([this, id, path = std::move(path), password = std::move(password)](PdfBackend &pdf) {
+bool RenderScheduler::openingCancelled(int id) {
+    std::lock_guard lock(mutex_);
+    return stop_ || closed_.count(id);
+}
+void RenderScheduler::open(int id, std::wstring path, std::string password, OfficeEngine engine) {
+    enqueue([this, id, path = std::move(path), password = std::move(password), engine](PdfBackend &pdf) {
         try {
-            auto info =
-                std::make_shared<DocumentInfo>(pdf.open(id, path, password, [&] { return stop_.load(); }));
+            auto info = std::make_shared<DocumentInfo>(
+                pdf.open(id, path, password, [&] { return openingCancelled(id); }, engine));
             try {
                 info->saved = AnnotationRepository(storage_).load(info->fingerprint);
             } catch (const std::exception &e) {
@@ -429,6 +487,10 @@ void RenderScheduler::open(int id, std::wstring path, std::string password) {
     });
 }
 void RenderScheduler::close(int id) {
+    {
+        std::lock_guard lock(mutex_);
+        closed_.insert(id);
+    }
     enqueue([id](PdfBackend &pdf) { pdf.close(id); });
 }
 void RenderScheduler::request(std::vector<RenderRequest> r) {
