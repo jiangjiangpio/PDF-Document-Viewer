@@ -57,27 +57,39 @@ jobs:
       - name: Package installer and portable build
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force build-ci/package, artifacts | Out-Null
-          Copy-Item build-ci/Release/PaperView.exe build-ci/package/
-          Copy-Item vendor/pdfium/pypdfium2_raw/pdfium.dll build-ci/package/
-          Copy-Item -Recurse vendor/pdfium/pypdfium2-5.14.0.dist-info/licenses build-ci/package/ThirdPartyLicenses
-          Copy-Item docs/USER_GUIDE.zh-CN.md build-ci/package/使用说明.txt
-          Copy-Item docs/THIRD_PARTY.md build-ci/package/THIRD_PARTY.txt
-          $nsis = "${env:ProgramFiles(x86)}/NSIS/makensis.exe"
-          if (!(Test-Path $nsis)) {
-            choco install nsis -y --no-progress
-            if ($LASTEXITCODE -ne 0) { throw "NSIS installation failed" }
+          try {
+            New-Item -ItemType Directory -Force build-ci/package, artifacts | Out-Null
+            Copy-Item build-ci/Release/PaperView.exe build-ci/package/
+            Copy-Item vendor/pdfium/pypdfium2_raw/pdfium.dll build-ci/package/
+            Copy-Item -Recurse vendor/pdfium/pypdfium2-5.14.0.dist-info/licenses build-ci/package/ThirdPartyLicenses
+            Copy-Item docs/USER_GUIDE.zh-CN.md build-ci/package/使用说明.txt
+            Copy-Item docs/THIRD_PARTY.md build-ci/package/THIRD_PARTY.txt
+            $candidates = @("${env:ProgramFiles(x86)}/NSIS/makensis.exe", "$env:ProgramFiles/NSIS/makensis.exe", "$env:ChocolateyInstall/bin/makensis.exe")
+            $nsis = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if (!$nsis) {
+              choco install nsis -y --no-progress
+              if ($LASTEXITCODE -notin 0,3010) { throw "NSIS installation failed" }
+              $nsis = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+            }
+            if (!$nsis) { throw "makensis.exe was not found after installing NSIS" }
+            $payload = (Resolve-Path build-ci/package).Path
+            $output = Join-Path (Resolve-Path artifacts).Path 'PDF-view-Setup-0.4.0-x64.exe'
+            & $nsis /INPUTCHARSET UTF8 /V3 "/DPAYLOAD=$payload" "/DOUTPUT=$output" packaging/installer.nsi *> artifacts/nsis.log
+            if ($LASTEXITCODE -ne 0) { throw "Installer build failed" }
+            Compress-Archive -Path build-ci/package/* -DestinationPath artifacts/PDF-view-0.4.0-x64-portable.zip
+            $sums = Get-ChildItem artifacts -File | Where-Object Extension -in '.exe','.zip' | ForEach-Object {
+              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $($_.Name)"
+            }
+            $sums | Set-Content artifacts/SHA256SUMS.txt -Encoding utf8
+          } catch {
+            $errorText = $_.Exception.Message.Replace('%', '%25').Replace([string][char]13, '%0D').Replace([string][char]10, '%0A')
+            Write-Output "::error::$errorText"
+            if (Test-Path artifacts/nsis.log) {
+              Get-Content artifacts/nsis.log -Tail 16 | ForEach-Object { Write-Output "::error::$($_.Replace('%','%25'))" }
+            }
+            throw
           }
-          $payload = (Resolve-Path build-ci/package).Path
-          $output = Join-Path (Resolve-Path artifacts).Path 'PDF-view-Setup-0.4.0-x64.exe'
-          & $nsis /V2 "/DPAYLOAD=$payload" "/DOUTPUT=$output" packaging/installer.nsi
-          if ($LASTEXITCODE -ne 0) { throw "Installer build failed" }
-          Compress-Archive -Path build-ci/package/* -DestinationPath artifacts/PDF-view-0.4.0-x64-portable.zip
-          $sums = Get-ChildItem artifacts -File | Where-Object Extension -in '.exe','.zip' | ForEach-Object {
-            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-            "$hash  $($_.Name)"
-          }
-          $sums | Set-Content artifacts/SHA256SUMS.txt -Encoding utf8
       - uses: actions/upload-artifact@v4
         with:
           name: PDF-view-Windows-x64
