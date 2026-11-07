@@ -1446,7 +1446,9 @@ bool AppWindow::key(MSG &m) {
         // Text boxes retain normal editing keys (copy/undo, etc.). Global document commands still work.
         bool editing = focus == controls_[SearchEdit] || focus == controls_[PageEdit];
         if (editing && *shortcut != Action::Open && *shortcut != Action::Find &&
-            *shortcut != Action::Settings && *shortcut != Action::Fullscreen)
+            *shortcut != Action::Settings && *shortcut != Action::Fullscreen &&
+            *shortcut != Action::NextHit && *shortcut != Action::PreviousHit &&
+            *shortcut != Action::CloseTab && *shortcut != Action::NextTab && *shortcut != Action::PreviousTab)
             return false;
         switch (*shortcut) {
         case Action::Open:

@@ -6,7 +6,7 @@ path=Path(sys.argv[1] if len(sys.argv)>1 else 'build-fixtures/Word-Formula-Sampl
 path.parent.mkdir(parents=True,exist_ok=True)
 paragraphs='''
 <w:p><w:r><w:t>Equation native DOCX: 数学、物理、化学公式测试</w:t></w:r></w:p>
-<w:p><m:oMath><m:f><m:num><m:r><m:t>−b ± √(b² − 4ac)</m:t></m:r></m:num><m:den><m:r><m:t>2a</m:t></m:r></m:den></m:f></m:oMath></w:p>
+<w:p><m:oMath><m:f><m:num><m:r><m:t>−b ± </m:t></m:r><m:rad><m:radPr><m:degHide m:val="1"/></m:radPr><m:deg/><m:e><m:sSup><m:e><m:r><m:t>b</m:t></m:r></m:e><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup><m:r><m:t>−4ac</m:t></m:r></m:e></m:rad></m:num><m:den><m:r><m:t>2a</m:t></m:r></m:den></m:f></m:oMath></w:p>
 <w:p><m:oMath><m:nary><m:naryPr><m:chr m:val="∫"/><m:limLoc m:val="subSup"/></m:naryPr><m:sub><m:r><m:t>0</m:t></m:r></m:sub><m:sup><m:r><m:t>1</m:t></m:r></m:sup><m:e><m:r><m:t>x² dx = ⅓</m:t></m:r></m:e></m:nary></m:oMath></w:p>
 <w:p><w:r><w:t>α + β + γ = π</w:t></w:r></w:p>
 <w:p><w:r><w:br w:type="page"/></w:r></w:p>

@@ -15,9 +15,23 @@ jobs:
       - name: Fetch verified PDFium
         run: python scripts/fetch_pdfium.py
       - name: Configure and build Windows x64
+        shell: pwsh
         run: |
-          cmake -S . -B build-ci -A x64
-          cmake --build build-ci --config Release --parallel 4
+          New-Item -ItemType Directory -Force build-ci | Out-Null
+          cmake -S . -B build-ci -A x64 *> build-ci/configure.log
+          $configureExit = $LASTEXITCODE
+          Get-Content build-ci/configure.log
+          if ($configureExit -ne 0) {
+            @('### CMake diagnostics', '```text') + (Get-Content build-ci/configure.log -Tail 120) + @('```') | Add-Content $env:GITHUB_STEP_SUMMARY
+            exit $configureExit
+          }
+          cmake --build build-ci --config Release --parallel 4 *> build-ci/build.log
+          $buildExit = $LASTEXITCODE
+          Get-Content build-ci/build.log
+          if ($buildExit -ne 0) {
+            @('### Windows compiler diagnostics', '```text') + (Get-Content build-ci/build.log -Tail 160) + @('```') | Add-Content $env:GITHUB_STEP_SUMMARY
+            exit $buildExit
+          }
       - name: Core, settings and native page renderer regression checks
         run: ctest --test-dir build-ci -C Release --output-on-failure --timeout 60
       - name: Exercise bundled Windows PDF engine

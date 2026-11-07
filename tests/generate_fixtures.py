@@ -29,7 +29,19 @@ if cjk.exists():
 c.setFont("Math", 19)
 for y, text in [(649, "x² + y² = r²"), (606, "∫₀¹ x² dx = ⅓"), (563, "α + β + γ = π"), (520, "E = mc²     F = ma"), (477, "H₂SO₄ + 2NaOH → Na₂SO₄ + 2H₂O")]:
     c.drawString(45, y, text)
-c.drawString(65, 405, "−b ± √(b² − 4ac)")
+prefix = "−b ± "
+c.drawString(65, 405, prefix)
+root_x = 65 + pdfmetrics.stringWidth(prefix, "Math", 19)
+radicand = "b² − 4ac"
+c.drawString(root_x + 17, 405, radicand)
+root = c.beginPath()
+root.moveTo(root_x, 411)
+root.lineTo(root_x + 4, 414)
+root.lineTo(root_x + 9, 402)
+root.lineTo(root_x + 15, 429)
+root.lineTo(root_x + 20 + pdfmetrics.stringWidth(radicand, "Math", 19), 429)
+c.setLineWidth(1.2)
+c.drawPath(root)
 c.line(45, 394, 270, 394)
 c.drawString(140, 368, "2a")
 c.setStrokeColorRGB(.12, .3, .65)
