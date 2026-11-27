@@ -3,6 +3,34 @@
 #include <fstream>
 #include <iostream>
 using namespace paper;
+void checkProgressiveTiles(const std::filesystem::path &path, const std::filesystem::path &storage) {
+    RenderScheduler worker(nullptr, executableDirectory() / L"pdfium.dll", storage);
+    worker.open(1, path.wstring());
+    // The last columns of the tutorial's first sheet are blank. Its first tile contains the header.
+    TileKey header{1, 0, 256, 0, 0, 0}, blank{1, 0, 256, 0, 6, 2};
+    bool haveHeader = false, haveBlank = false;
+    auto deadline = GetTickCount64() + 3000;
+    while (GetTickCount64() < deadline && !(haveHeader && haveBlank)) {
+        for (const auto &result : worker.take()) {
+            if (result.kind == WorkerResult::Kind::Fatal || result.kind == WorkerResult::Kind::OpenFailed ||
+                result.kind == WorkerResult::Kind::RenderFailed)
+                throw std::runtime_error("Progressive tutorial render failed");
+            if (result.kind != WorkerResult::Kind::Rendered)
+                continue;
+            if (result.key == header)
+                haveHeader = !result.tile->white && !result.tile->pixels.empty();
+            if (result.key == blank)
+                haveBlank = result.tile->white && result.tile->pixels.empty() && result.tile->width == 512;
+        }
+        std::vector<RenderRequest> visible;
+        if (!haveHeader) visible.push_back({header, 1});
+        if (!haveBlank) visible.push_back({blank, 2});
+        worker.request(std::move(visible));
+        Sleep(1);
+    }
+    if (!haveHeader || !haveBlank)
+        throw std::runtime_error("Repeated viewport refresh did not complete sharp text and blank tiles");
+}
 int main() {
     OleInitialize(nullptr);
     auto root = std::filesystem::temp_directory_path() /
@@ -28,11 +56,12 @@ int main() {
         }
         if (count != 54 || !ink || !marker)
             throw std::runtime_error("Missing editable ink/highlighter examples");
+        {
         PdfBackend backend(executableDirectory() / L"pdfium.dll");
         auto doc = backend.open(1, path.wstring(), "", [] { return false; });
         if (doc.sizes.size() != 6 || doc.outline.size() != 6 || doc.fingerprint != key)
             throw std::runtime_error("Tutorial navigation or PDF identity mismatch");
-        if (backend.text(1, 1).find(L"荧光笔") == std::wstring::npos ||
+        if (backend.text(1, 1).find(L"已有高亮") == std::wstring::npos ||
             backend.text(1, 5).find(L"H₂SO₄") == std::wstring::npos)
             throw std::runtime_error("Tutorial text/formulas did not survive embedding");
         for (int page = 0; page < 6; ++page) {
@@ -41,6 +70,8 @@ int main() {
                 throw std::runtime_error("Tutorial page rendering failed");
         }
         backend.close(1);
+        }
+        checkProgressiveTiles(path, annotations);
         // Erasing a whole practice page must survive reopening; never silently reseed.
         original.pages.erase(3);
         repository.save(key, original);

@@ -1,5 +1,8 @@
 #include "settings.hpp"
+#include <chrono>
 #include <fstream>
+#include <iomanip>
+#include <limits>
 #include <sstream>
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -8,15 +11,36 @@
 #include <windows.h>
 #endif
 namespace paper {
+int64_t beijingDay(int64_t utcSeconds) {
+    const int64_t shifted = utcSeconds + 8 * 60 * 60;
+    return shifted / 86400 - (shifted < 0 && shifted % 86400 != 0 ? 1 : 0);
+}
+int64_t beijingDay() {
+    return beijingDay(std::chrono::duration_cast<std::chrono::seconds>(
+                          std::chrono::system_clock::now().time_since_epoch()).count());
+}
 AppSettings::AppSettings() {
     bindings = {KeyChord{'O', 1}, {'F', 1},  {'S', 1},  {'W', 1},  {'Z', 1}, {'Y', 1},
                 {'0', 1},         {0xbb, 1}, {0xbd, 1}, {0x7a, 0}, {'D', 1}, {'B', 1},
                 {0xbc, 1},        {0x72, 0}, {0x72, 2}, {9, 1},    {9, 3},   {'C', 3}};
 }
 void AppSettings::validate() const {
-    if (blurLevel < 0 || blurLevel > 3 || !std::isfinite(scrollSensitivity) || scrollSensitivity < .25 ||
-        scrollSensitivity > 3 || static_cast<int>(officeEngine) < 0 || static_cast<int>(officeEngine) > 2)
+    if (blurLevel < 0 || blurLevel > 3 || frostTransparency < 0 || frostTransparency > 100 ||
+        (frostTint != FrostTint::White && frostTint != FrostTint::Gray) ||
+        !std::isfinite(scrollSensitivity) || scrollSensitivity < .25 ||
+        scrollSensitivity > 3 || (penColor & 0xff000000u) != 0 || !std::isfinite(penWidth) ||
+        penWidth <= 0 || penWidth > 4096 || !std::isfinite(penScreenWidthMm) ||
+        penScreenWidthMm < minScreenPenWidthMm || penScreenWidthMm > maxScreenPenWidthMm ||
+        !std::isfinite(dailyPenWidthMm) || dailyPenWidthMm < minScreenPenWidthMm ||
+        dailyPenWidthMm > maxScreenPenWidthMm || penWidthOverrideDay < -1 ||
+        static_cast<int>(officeEngine) < 0 || static_cast<int>(officeEngine) > 2)
         throw std::runtime_error("Invalid settings value");
+    if (screenCalibrations.size() > 128)
+        throw std::runtime_error("Too many screen calibrations");
+    for (const auto &[display, density] : screenCalibrations)
+        if (display.empty() || display.size() > 2048 || display.find_first_of("\r\n") != std::string::npos ||
+            !std::isfinite(density) || density < .5 || density > 20)
+            throw std::runtime_error("Invalid screen calibration");
     for (size_t i = 0; i < bindings.size(); ++i) {
         auto c = bindings[i];
         if (c.key > 254 || c.modifiers > 7 || (!c.key && c.modifiers))
@@ -46,7 +70,7 @@ std::optional<Action> AppSettings::action(KeyChord chord) const {
 std::wstring AppSettings::actionName(Action a) {
     static constexpr const wchar_t *names[] = {
         L"打开文档", L"查找文字",       L"保存批注",       L"关闭标签页",   L"撤销",         L"重做",
-        L"适应宽度", L"放大",           L"缩小",           L"全屏",         L"绘制开关",     L"侧边栏开关",
+        L"适应宽度", L"放大",           L"缩小",           L"全屏",         L"画笔开关",     L"侧边栏开关",
         L"设置",     L"下一个搜索结果", L"上一个搜索结果", L"下一个标签页", L"上一个标签页", L"复制本页文字"};
     return names[static_cast<size_t>(a)];
 }
@@ -59,7 +83,7 @@ AppSettings SettingsRepository::load() const {
         return s;
     }
     std::string line;
-    bool version = false;
+    int settingsVersion = 0;
     while (std::getline(in, line)) {
         std::istringstream row(line);
         std::string key;
@@ -69,9 +93,9 @@ AppSettings SettingsRepository::load() const {
         if (key == "PDFVIEW_SETTINGS") {
             int v = 0;
             row >> v;
-            if (v != 1)
+            if (v != 1 && v != 2)
                 throw std::runtime_error("Unsupported settings version");
-            version = true;
+            settingsVersion = v;
         } else if (key == "sidebar" || key == "restore" || key == "office_pdf") {
             int v = -1;
             row >> v;
@@ -80,8 +104,37 @@ AppSettings SettingsRepository::load() const {
             (key == "sidebar"   ? s.openSidebar
              : key == "restore" ? s.restoreSession
                                 : s.officePdfMode) = v != 0;
-        } else if (key == "blur")
+        } else if (key == "auto_pen_width") {
+            int v = -1;
+            row >> v;
+            if (v < 0 || v > 1)
+                throw std::runtime_error("Invalid boolean");
+            s.autoPenWidth = v != 0;
+        } else if (key == "pen_color") {
+            row >> std::hex >> s.penColor >> std::dec;
+        } else if (key == "pen_width")
+            row >> s.penWidth;
+        else if (key == "pen_screen_width_mm")
+            row >> s.penScreenWidthMm;
+        else if (key == "daily_pen_width_mm")
+            row >> s.dailyPenWidthMm;
+        else if (key == "screen_calibration") {
+            std::string display;
+            double density = 0;
+            row >> std::quoted(display) >> density;
+            s.screenCalibrations[display] = density;
+        }
+        else if (key == "pen_width_override_day")
+            row >> s.penWidthOverrideDay;
+        else if (key == "blur")
             row >> s.blurLevel;
+        else if (key == "frost_transparency")
+            row >> s.frostTransparency;
+        else if (key == "frost_tint") {
+            int value = -1;
+            row >> value;
+            s.frostTint = static_cast<FrostTint>(value);
+        }
         else if (key == "scroll")
             row >> s.scrollSensitivity;
         else if (key == "office") {
@@ -100,7 +153,7 @@ AppSettings SettingsRepository::load() const {
         if (row.fail())
             throw std::runtime_error("Invalid settings file");
     }
-    if (!version)
+    if (!settingsVersion)
         throw std::runtime_error("Invalid settings header");
     s.validate();
     return s;
@@ -112,9 +165,18 @@ void SettingsRepository::save(const AppSettings &s) const {
     tmp += L".tmp";
     {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        out << "PDFVIEW_SETTINGS 1\nsidebar " << s.openSidebar << "\nrestore " << s.restoreSession
-            << "\noffice_pdf " << s.officePdfMode << "\nblur " << s.blurLevel << "\nscroll "
-            << s.scrollSensitivity << "\noffice " << static_cast<int>(s.officeEngine) << "\n";
+        out << std::setprecision(std::numeric_limits<double>::max_digits10);
+        out << "PDFVIEW_SETTINGS 2\nsidebar " << s.openSidebar << "\nrestore " << s.restoreSession
+            << "\noffice_pdf " << s.officePdfMode << "\nauto_pen_width " << s.autoPenWidth
+            << "\npen_color " << std::hex << s.penColor << std::dec << "\npen_width " << s.penWidth
+            << "\npen_screen_width_mm " << s.penScreenWidthMm << "\ndaily_pen_width_mm " << s.dailyPenWidthMm
+            << "\npen_width_override_day "
+            << s.penWidthOverrideDay << "\nblur " << s.blurLevel
+            << "\nfrost_transparency " << s.frostTransparency << "\nfrost_tint " << static_cast<int>(s.frostTint)
+            << "\nscroll " << s.scrollSensitivity
+            << "\noffice " << static_cast<int>(s.officeEngine) << "\n";
+        for (const auto &[display, density] : s.screenCalibrations)
+            out << "screen_calibration " << std::quoted(display) << ' ' << density << '\n';
         for (size_t i = 0; i < s.bindings.size(); ++i)
             out << "key " << i << ' ' << s.bindings[i].key << ' ' << s.bindings[i].modifiers << '\n';
         out.flush();

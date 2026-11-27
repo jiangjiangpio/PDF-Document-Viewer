@@ -4,6 +4,8 @@
 #include <cmath>
 #include <commctrl.h>
 #include <cstdint>
+#include <iomanip>
+#include <sstream>
 namespace paper {
 class PenPalette {
     HWND window_ = nullptr, slider_ = nullptr;
@@ -11,7 +13,8 @@ class PenPalette {
     UINT dpi_ = 96;
     uint32_t &color_;
     float &width_;
-    bool marker_, done_ = false;
+    bool done_ = false, screenWidth_ = false, widthChanged_ = false;
+    double pixelsPerMm_ = 96. / 25.4;
     static constexpr uint32_t colors_[30] = {
         0x000000, 0x555759, 0x808385, 0xa4a7aa, 0xd0d2d4, 0xffffff, 0xb31368, 0xe81818, 0xff5900, 0xffac00,
         0xffd000, 0xffeb00, 0xa4e619, 0x26d800, 0x00865d, 0x00a8c3, 0x006bff, 0x4200ba, 0x6500cb, 0x650080,
@@ -51,7 +54,7 @@ class PenPalette {
         }
     }
     void previewChanged() {
-        RECT preview{0, p(266), p(294), p(332)};
+        RECT preview{0, p(266), p(294), p(363)};
         InvalidateRect(window_, &preview, FALSE);
     }
     void paint(HDC dc) {
@@ -66,7 +69,9 @@ class PenPalette {
                 sink->EndFigure(D2D1_FIGURE_END_OPEN);
                 sink->Close();
                 brush_->SetColor(D2D1::ColorF(color_));
-                target_->DrawGeometry(curve, brush_, width_, stroke_);
+                float previewWidth = screenWidth_ ? static_cast<float>(width_ * pixelsPerMm_ * 96 / dpi_)
+                                                   : width_;
+                target_->DrawGeometry(curve, brush_, std::min(previewWidth, 48.f), stroke_);
             }
             release(sink);
             release(curve);
@@ -76,7 +81,11 @@ class PenPalette {
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, RGB(40, 40, 40));
         TextOutW(dc, p(20), p(16), L"颜色", 2);
-        TextOutW(dc, p(20), p(340), L"粗细", 2);
+        std::wostringstream label;
+        label << L"粗细  " << std::fixed << std::setprecision(screenWidth_ ? 1 : 2) << width_
+              << (screenWidth_ ? L" mm" : L"（文档单位）");
+        auto value = label.str();
+        TextOutW(dc, p(20), p(340), value.c_str(), static_cast<int>(value.size()));
         TextOutW(dc, p(22), p(411), L"细", 1);
         TextOutW(dc, p(266), p(411), L"粗", 1);
         SelectObject(dc, previous);
@@ -187,6 +196,7 @@ class PenPalette {
                 float width = (float)SendMessageW(self->slider_, TBM_GETPOS, 0, 0) / 10.f;
                 if (width != self->width_) {
                     self->width_ = width;
+                    self->widthChanged_ = true;
                     self->previewChanged();
                 }
             }
@@ -196,7 +206,9 @@ class PenPalette {
     }
 
   public:
-    PenPalette(uint32_t &color, float &width, bool marker) : color_(color), width_(width), marker_(marker) {}
+    PenPalette(uint32_t &color, float &width, bool screenWidth = false, double pixelsPerMm = 96. / 25.4)
+        : color_(color), width_(width), screenWidth_(screenWidth), pixelsPerMm_(pixelsPerMm) {}
+    bool widthChanged() const { return widthChanged_; }
     ~PenPalette() {
         release(brush_);
         release(target_);
@@ -245,7 +257,8 @@ class PenPalette {
         slider_ = CreateWindowW(TRACKBAR_CLASSW, L"画笔粗细",
                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_HORZ | TBS_NOTICKS, p(18), p(365),
                                 p(262), p(44), window_, nullptr, nullptr, nullptr);
-        SendMessageW(slider_, TBM_SETRANGE, TRUE, MAKELPARAM(marker_ ? 40 : 5, marker_ ? 320 : 120));
+        SendMessageW(slider_, TBM_SETRANGE, TRUE,
+                     MAKELPARAM(screenWidth_ ? 1 : 5, screenWidth_ ? 100 : std::max(120, (int)std::ceil(width_ * 10))));
         SendMessageW(slider_, TBM_SETPOS, TRUE, (LPARAM)std::lround(width_ * 10));
         ShowWindow(window_, SW_SHOW);
         SetFocus(slider_);

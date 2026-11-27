@@ -118,6 +118,35 @@ int main() {
         CHECK(d.redo());
         CHECK(d.page(0).size() == 3);
     });
+    test("visible clear splits a crossing stroke, preserves offscreen ink, and undoes in one step", [] {
+        ViewportController view;
+        view.resize(180,180); view.setPages({{600,600},{600,600}});
+        view.setZoom(1,{90,90}); view.scrollX=180; view.scrollY=180; view.clamp();
+        AnnotationDocument doc;
+        auto a=view.pagePoint(0,{-60,90}), b=view.pagePoint(0,{250,90});
+        doc.add(stroke(0,{a,b}));
+        doc.add(stroke(1,{{40,20},{45,30}}));
+        auto before=doc.page(0);
+        CHECK(doc.clearView(view));
+        CHECK(doc.page(0).size()==2 && doc.page(1).size()==1);
+        CHECK(doc.undo() && doc.page(0)==before);
+        CHECK(doc.redo() && doc.page(0).size()==2);
+        view.setZoom(32,{80,80});
+        CHECK(near(view.zoom,16.));
+        auto outside=view.pagePoint(0,{-5,-10});
+        CHECK(distance(view.screenPoint(0,outside),{-5,-10}) < .00001);
+    });
+    test("paired touch translation does not generate false pinch", [] {
+        double total=1; Point movement{};
+        InputController input({[](Point){},[](Point){},[]{},[]{},[](Point){},
+            [&](Point,double scale,Point delta){total*=scale; movement=movement+delta;}});
+        input.down(1,{100,100},false); input.down(2,{180,100},false);
+        input.frame({{1,{100,125}},{2,{180,125}}});
+        input.frame({{1,{100,125}},{2,{180,125}}});
+        CHECK(near(total,1) && near(movement.y,25));
+        input.frame({{1,{80,125}},{2,{200,125}}});
+        CHECK(near(total,1.5));
+    });
     test("second finger cancels provisional ink", [] {
         int began = 0, appended = 0, committed = 0, cancelled = 0, pans = 0, pinches = 0;
         InputController input({[&](Point) { ++began; }, [&](Point) { ++appended; }, [&] { ++committed; },

@@ -57,6 +57,9 @@ struct Stroke {
     uint32_t color = 0x2563eb;
     float width = 2.5f;
     std::vector<Point> points;
+    // Stored strokes are immutable. Cache bounds once for viewport culling and margins.
+    mutable std::optional<Rect> boundsCache;
+    Rect bounds() const;
     bool hit(Point point, double radius) const;
 };
 using StrokePtr = std::shared_ptr<const Stroke>;
@@ -70,10 +73,12 @@ struct Snapshot {
     PageStrokes pages;
     ViewState view;
 };
+class ViewportController;
 class AnnotationDocument {
     struct Edit {
         std::vector<std::pair<size_t, StrokePtr>> removed;
         StrokePtr added;
+        std::vector<std::pair<size_t, StrokePtr>> fragments;
     };
     PageStrokes pages_;
     std::vector<Edit> undo_, redo_;
@@ -90,6 +95,8 @@ class AnnotationDocument {
     void add(Stroke stroke);
     bool erase(int page, Point p, double radius);
     bool eraseIds(int page, const std::vector<uint64_t> &ids);
+    bool clearView(const ViewportController &view);
+    bool removeWhere(const std::function<bool(const Stroke &)> &match);
     bool undo();
     bool redo();
     bool canUndo() const {
@@ -114,6 +121,7 @@ class ViewportController {
     std::vector<Size> sizes_;
     std::vector<double> tops_;
     double contentHeight_ = 0, contentWidth_ = 0;
+    std::map<int,Rect> inkBounds_;
     void layout();
 
   public:
@@ -122,6 +130,7 @@ class ViewportController {
     bool fit = true;
     void setPages(std::vector<Size> sizes);
     void resize(double w, double h);
+    void includeInk(const PageStrokes &ink);
     void setRotation(int turns);
     void fitWidth();
     void setZoom(double value, Point anchor);
@@ -129,6 +138,10 @@ class ViewportController {
     void clamp();
     Rect pageRect(int page) const;
     std::optional<std::pair<int, Point>> pageAt(Point screen) const;
+    int nearestPage(Point screen) const;
+    Point pagePoint(int page, Point screen) const;
+    bool strokeVisible(const Stroke &stroke) const;
+    double contentWidth() const { return contentWidth_; }
     Point screenPoint(int page, Point point) const;
     std::vector<int> visible(double margin = 0) const;
     int currentPage() const;
@@ -154,12 +167,16 @@ struct InputCallbacks {
 class InputController {
     std::map<uint32_t, Point> pointers_;
     bool ink_ = false, suppress_ = false;
+    double pinchReference_ = 0;
     InputCallbacks callbacks_;
 
   public:
     explicit InputController(InputCallbacks callbacks) : callbacks_(std::move(callbacks)) {}
     void down(uint32_t id, Point p, bool drawing);
     void move(uint32_t id, Point p);
+    void frame(const std::map<uint32_t, Point> &positions);
+    bool hasPointer(uint32_t id) const { return pointers_.count(id) != 0; }
+    bool multiTouch() const { return pointers_.size() >= 2; }
     void up(uint32_t id, Point p);
     void cancel();
     bool active() const {
@@ -174,6 +191,7 @@ struct TileKey {
 struct Tile {
     int width = 0, height = 0;
     std::vector<uint8_t> pixels;
+    bool white = false;
 };
 class TileCache {
     struct Item {

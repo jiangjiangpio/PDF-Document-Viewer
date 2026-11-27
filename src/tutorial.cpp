@@ -39,6 +39,13 @@ std::filesystem::path TutorialDocument::prepare() const {
     materialize(path, pdf);
     // Seed once. Reopening must preserve edits, including erased example strokes.
     if (!std::filesystem::exists(annotations_ / (key + ".ink"))) {
+        // The 0.5 tutorial has the same six page geometries and practice positions.
+        const std::string previous = "0a6581843e38e293318d69633afd98f92de8da4ad63385123128ba133ee6de1f";
+        if (std::filesystem::exists(annotations_ / (previous + ".ink"))) {
+            AnnotationRepository repository(annotations_);
+            repository.save(key,repository.load(previous));
+            return path;
+        }
         auto examples = folder / L"examples";
         materialize(examples / (key + ".ink"), resource(IDR_TUTORIAL_INK));
         auto snapshot = AnnotationRepository(examples).load(key);

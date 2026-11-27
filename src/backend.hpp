@@ -36,8 +36,10 @@ struct PdfError : std::runtime_error {
     PdfError(std::string text, unsigned long c = 0) : runtime_error(text), code(c) {}
 };
 class OfficePageBackend;
+class ImageBackend;
 class PdfBackend {
     std::unique_ptr<OfficePageBackend> office_;
+    std::unique_ptr<ImageBackend> images_;
     struct FileAccess {
         unsigned long length;
         int(__cdecl *read)(void *, unsigned long, unsigned char *, unsigned long);
@@ -86,7 +88,7 @@ struct RenderRequest {
     int priority = 0;
 };
 struct WorkerResult {
-    enum class Kind { Opened, OpenFailed, Rendered, RenderFailed, Search, Text, Saved, SaveFailed, Fatal };
+    enum class Kind { Opened, OpenFailed, Rendered, RenderFailed, Search, Text, Fatal };
     Kind kind;
     int document = 0;
     uint64_t token = 0;
@@ -106,6 +108,8 @@ class RenderScheduler {
     std::condition_variable wake_;
     std::deque<std::function<void(PdfBackend &)>> commands_;
     std::vector<RenderRequest> requests_;
+    std::optional<TileKey> rendering_;
+    uint64_t renderingGeneration_ = 0;
     std::deque<WorkerResult> results_;
     std::atomic<bool> stop_{false};
     std::set<int> closed_;
@@ -113,6 +117,7 @@ class RenderScheduler {
     std::atomic<uint64_t> generation_{0}, searchGeneration_{0};
     void run();
     void emit(WorkerResult result);
+    void finishTile(uint64_t generation, std::optional<WorkerResult> result);
     void enqueue(std::function<void(PdfBackend &)> command);
 
   public:
@@ -124,30 +129,6 @@ class RenderScheduler {
     void request(std::vector<RenderRequest> tiles);
     void search(int id, std::wstring query, uint64_t token);
     void copyText(int id, int page);
-    std::deque<WorkerResult> take();
-};
-class SaveService {
-    struct Job {
-        int id;
-        std::string key;
-        Snapshot snapshot;
-        uint64_t revision;
-    };
-    AnnotationRepository repository_;
-    HWND window_;
-    std::thread thread_;
-    std::mutex mutex_;
-    std::condition_variable wake_;
-    std::map<std::string, Job> jobs_;
-    bool stop_ = false, working_ = false;
-    std::deque<WorkerResult> results_;
-    void run();
-
-  public:
-    SaveService(HWND w, std::filesystem::path path);
-    ~SaveService();
-    void flush();
-    void save(int id, std::string key, Snapshot snapshot, uint64_t revision);
     std::deque<WorkerResult> take();
 };
 std::string hashText(const std::string &text);

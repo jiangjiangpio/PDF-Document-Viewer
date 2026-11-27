@@ -2,6 +2,7 @@
 #include "backend.hpp"
 #include "office.hpp"
 #include "office_convert.hpp"
+#include "pen.hpp"
 #include "renderer.hpp"
 #include "settings_dialog.hpp"
 #include "toolbar.hpp"
@@ -14,8 +15,8 @@ struct DocumentSession {
     std::shared_ptr<DocumentInfo> info;
     ViewportController view;
     AnnotationDocument annotations;
-    bool loading = true, dirty = false, saveFailed = false;
-    uint64_t revision = 0, searchToken = 0;
+    bool loading = true, dirty = false;
+    uint64_t searchToken = 0;
     std::wstring status = L"正在打开…";
     std::vector<SearchHit> hits;
     int hitIndex = -1;
@@ -27,8 +28,7 @@ class AppWindow {
         Sidebar,
         Draw,
         Palette,
-        Marker,
-        Eraser,
+        Eraser = 105,
         Undo,
         Redo,
         ZoomOut,
@@ -48,9 +48,8 @@ class AppWindow {
         SearchNext,
         OutlineTab,
         ThumbnailTab,
-        Save
+        Save, ClearInk
     };
-    enum class Tool { Pen, Marker, Eraser };
     HWND window_ = nullptr, canvas_ = nullptr, tabs_ = nullptr, tree_ = nullptr, thumbs_ = nullptr,
          status_ = nullptr, tooltips_ = nullptr;
     std::map<int, HWND> controls_;
@@ -65,12 +64,11 @@ class AppWindow {
     UINT dpi_ = 96;
     unsigned toolbarState_ = ~0u;
     bool paletteOpen_ = false;
+    bool clearDialogOpen_ = false;
     int sidebarWidth_ = 240, lastThumbTop_ = -1;
-    bool sidebar_ = true, thumbnails_ = false, find_ = false, drawing_ = false, fullscreen_ = false,
+    bool sidebar_ = true, thumbnails_ = false, find_ = false, fullscreen_ = false,
          closing_ = false;
-    Tool tool_ = Tool::Pen;
-    uint32_t inkColor_ = 0x2563eb, markerColor_ = 0xfacc15;
-    float inkWidth_ = 2.5f, markerWidth_ = 14;
+    PenController pen_;
     WINDOWPLACEMENT placement_{sizeof(WINDOWPLACEMENT)};
     std::vector<std::unique_ptr<DocumentSession>> documents_;
     int active_ = -1, nextId_ = 1;
@@ -78,7 +76,6 @@ class AppWindow {
     std::set<TileKey> failedTiles_;
     std::unique_ptr<CanvasRenderer> renderer_;
     std::unique_ptr<RenderScheduler> scheduler_;
-    std::unique_ptr<SaveService> saver_;
     AppSettings settings_;
     std::unique_ptr<OfficePdfService> officePdf_;
     void processOfficePdf();
@@ -109,8 +106,10 @@ class AppWindow {
     void openDialog();
     void command(int id);
     void palette();
+    void savePenSettings();
+    float effectivePenWidth(const DocumentSession *session, Point contact) const;
     void refresh(bool interacting = false);
-    void schedule(bool previewOnly = false);
+    void schedule(bool interacting = false);
     void paint();
     void processResults();
     void beginStroke(Point);
@@ -118,8 +117,16 @@ class AppWindow {
     void commitStroke();
     void cancelStroke();
     void invalidateInk(Point a, Point b, double width);
-    void save(DocumentSession &);
-    void viewChanged();
+    bool save(DocumentSession &);
+    bool confirmClose(DocumentSession &);
+    void saveView(DocumentSession &);
+    Point wheelVelocity_{}, touchVelocity_{};
+    ULONGLONG motionTick_ = 0, touchTick_ = 0;
+    void stopMotion();
+    void startMotion(Point velocity);
+    void trackPan(Point delta);
+    void finishTouch();
+    void clearInk(int scope);
     void search();
     void nextHit(int delta);
     void scroll(WPARAM);
@@ -136,7 +143,7 @@ class AppWindow {
     LRESULT canvasMessage(UINT, WPARAM, LPARAM);
 
   public:
-    AppWindow();
+    explicit AppWindow(std::filesystem::path annotationRoot = {});
     ~AppWindow();
     int run(HINSTANCE, int, const std::vector<std::wstring> &paths);
     void openFile(const std::wstring &path);

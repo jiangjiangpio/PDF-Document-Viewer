@@ -1,6 +1,8 @@
 #include "app.hpp"
+#include "clear_ink_dialog.hpp"
 #include "palette.hpp"
 #include "tutorial.hpp"
+#include "display.hpp"
 #include <commdlg.h>
 #include <fstream>
 #include <shellapi.h>
@@ -12,7 +14,14 @@ namespace {
 constexpr uint32_t colors[] = {0x111827, 0x2563eb, 0xdc2626, 0x16a34a, 0x9333ea, 0xfacc15, 0xf97316};
 constexpr const wchar_t *colorNames[] = {L"黑色", L"蓝色", L"红色", L"绿色", L"紫色", L"黄色", L"橙色"};
 constexpr float penWidths[] = {1.2f, 2.5f, 4.f, 7.f};
-constexpr float markerWidths[] = {8.f, 14.f, 20.f, 28.f};
+int detailScale(const DocumentSession &session) {
+    return std::max(1, static_cast<int>(std::lround(session.view.zoom *
+                                                   (session.info->nativeOffice ? 128. : 64.))));
+}
+Rect tileRect(Rect page, const TileKey &key, double factor, const Tile &tile) {
+    return {page.x + key.x * 512 * factor, page.y + key.y * 512 * factor,
+            tile.width * factor, tile.height * factor};
+}
 std::wstring windowText(HWND w) {
     int n = GetWindowTextLengthW(w);
     std::wstring s(n + 1, 0);
@@ -119,29 +128,34 @@ std::optional<std::wstring> prompt(HWND parent, const std::wstring &title, const
     return state.ok ? std::optional<std::wstring>(state.value) : std::nullopt;
 }
 } // namespace
-AppWindow::AppWindow()
+AppWindow::AppWindow(std::filesystem::path annotationRoot)
     : input_(InputCallbacks{[this](Point p) { beginStroke(p); }, [this](Point p) { appendStroke(p); },
                             [this] { commitStroke(); }, [this] { cancelStroke(); },
                             [this](Point d) {
                                 if (auto *s = active()) {
-                                    s->view.pan({d.x * settings_.scrollSensitivity,
-                                                 d.y * settings_.scrollSensitivity});
+                                    Point delta{d.x * settings_.scrollSensitivity, d.y * settings_.scrollSensitivity};
+                                    s->view.pan(delta);
+                                    trackPan(delta);
                                     refresh(true);
-                                    viewChanged();
+
                                 }
                             },
                             [this](Point anchor, double factor, Point delta) {
                                 if (auto *s = active()) {
-                                    s->view.setZoom(s->view.zoom * factor, anchor);
+                                    if (std::abs(factor-1.) > .00001)
+                                        s->view.setZoom(s->view.zoom * factor, anchor);
+                                    if (std::abs(factor-1.) < .012) trackPan(delta);
+                                    else touchVelocity_ = {};
                                     s->view.pan(delta);
                                     refresh(true);
-                                    viewChanged();
+
                                 }
-                            }}) {}
+                            }}) {
+    storage_ = std::move(annotationRoot);
+}
 AppWindow::~AppWindow() {
     officePdf_.reset();
     scheduler_.reset();
-    saver_.reset();
     renderer_.reset();
     if (font_)
         DeleteObject(font_);
@@ -155,6 +169,21 @@ DocumentSession *AppWindow::byId(int id) {
         if (s->id == id)
             return s.get();
     return nullptr;
+}
+void AppWindow::savePenSettings() {
+    try {
+        SettingsRepository(storage_.parent_path() / L"settings.txt").save(settings_);
+    } catch (const std::exception &e) {
+        MessageBoxW(window_, (L"画笔设置未能保存到磁盘，下次启动可能无法恢复。\n" + utf16(e.what())).c_str(),
+                    L"画笔设置", MB_ICONWARNING);
+    }
+}
+float AppWindow::effectivePenWidth(const DocumentSession *session, Point contact) const {
+    POINT point{LONG(std::lround(contact.x)),LONG(std::lround(contact.y))};
+    ClientToScreen(canvas_, &point);
+    auto screen = metricsForMonitor(MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST),canvas_,settings_);
+    return static_cast<float>(PenController::pageWidth(settings_, session ? session->view.zoom : 1.,
+                                                       screen.pixelsPerMm, beijingDay()));
 }
 int AppWindow::run(HINSTANCE instance, int show, const std::vector<std::wstring> &paths) {
     INITCOMMONCONTROLSEX cc{sizeof(cc), ICC_TAB_CLASSES | ICC_TREEVIEW_CLASSES | ICC_STANDARD_CLASSES};
@@ -196,7 +225,8 @@ int AppWindow::run(HINSTANCE instance, int show, const std::vector<std::wstring>
 }
 void AppWindow::createControls() {
     dpi_ = GetDpiForWindow(window_);
-    storage_ = storageDirectory();
+    if (storage_.empty())
+        storage_ = storageDirectory();
     try {
         settings_ = SettingsRepository(storage_.parent_path() / L"settings.txt").load();
     } catch (const std::exception &e) {
@@ -233,10 +263,10 @@ void AppWindow::createControls() {
     };
     button(Sidebar, L"目录", ToolbarIcon::Sidebar, L"显示或隐藏目录与缩略图");
     button(Open, L"打开", ToolbarIcon::Open, L"打开 PDF (Ctrl+O)");
-    button(Draw, L"绘制", ToolbarIcon::Pen, L"开启或关闭绘制：单指书写，双指移动与缩放", 78);
+    button(Draw, L"画笔", ToolbarIcon::Pen, L"画笔：再次点击回到阅读，双指移动与缩放", 78);
     button(Palette, L"画笔设置", ToolbarIcon::Chevron, L"画笔颜色与粗细", 28);
-    button(Marker, L"荧光笔", ToolbarIcon::Marker, L"荧光笔：再次点击返回画笔");
-    button(Eraser, L"橡皮", ToolbarIcon::Eraser, L"橡皮：整笔擦除");
+    button(Eraser, L"橡皮", ToolbarIcon::Eraser, L"橡皮：整笔擦除，再次点击回到阅读");
+    button(ClearInk, L"清除笔迹", ToolbarIcon::Broom, L"清除当前文档、当前页或当前视图的笔迹");
     button(Undo, L"撤销", ToolbarIcon::Undo, L"撤销 (Ctrl+Z)");
     button(Redo, L"重做", ToolbarIcon::Redo, L"重做 (Ctrl+Y)");
     button(ZoomOut, L"缩小", ToolbarIcon::Minus, L"缩小 (Ctrl+-)");
@@ -299,7 +329,7 @@ void AppWindow::createControls() {
                               0, 0, 0, 0, window_, reinterpret_cast<HMENU>(99), nullptr, nullptr);
     SendMessageW(thumbs_, LB_SETITEMHEIGHT, 0, px(170));
     canvas_ = CreateWindowExW(0, L"PaperViewCanvas", L"",
-                              WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP | WS_CLIPCHILDREN, 0, 0, 0, 0,
+                              WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | WS_TABSTOP | WS_CLIPCHILDREN, 0, 0, 0, 0,
                               window_, nullptr, nullptr, this);
     status_ = CreateWindowExW(0, L"STATIC", L"打开 PDF，开始阅读与批注",
                               WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE, 0, 0, 0, 0, window_, nullptr,
@@ -309,7 +339,6 @@ void AppWindow::createControls() {
     DragAcceptFiles(window_, TRUE);
     renderer_ = std::make_unique<CanvasRenderer>(canvas_);
     scheduler_ = std::make_unique<RenderScheduler>(window_, executableDirectory() / L"pdfium.dll", storage_);
-    saver_ = std::make_unique<SaveService>(window_, storage_);
     officePdf_ = std::make_unique<OfficePdfService>(window_, storage_.parent_path() / L"office-pdf-cache-v1");
     updateFont();
     refreshShortcutHints();
@@ -353,7 +382,7 @@ void AppWindow::layout() {
         }
         return x;
     };
-    std::vector<int> left{Sidebar, Open, Draw, Palette, Marker, Eraser, Undo, Redo};
+    std::vector<int> left{Sidebar, Open, Draw, Palette, Eraser, ClearInk, Undo, Redo};
     std::vector<int> middle{ZoomOut, ZoomLabel, ZoomIn, Fit, PageEdit, PageTotal, Rotate};
     std::vector<int> right{Find, Save, CloseTab, Fullscreen, Help};
     auto groupWidth = [&](const auto &ids) {
@@ -391,7 +420,7 @@ void AppWindow::layout() {
         y += row;
     }
     int side = sidebar_ ? std::min(px(sidebarWidth_), width / 3) : 0;
-    int body = std::max(1, height - y - px(24));
+    int body = std::max(1, height - y);
     ShowWindow(controls_[OutlineTab], sidebar_ ? SW_SHOW : SW_HIDE);
     ShowWindow(controls_[ThumbnailTab], sidebar_ ? SW_SHOW : SW_HIDE);
     if (side) {
@@ -403,7 +432,7 @@ void AppWindow::layout() {
     ShowWindow(tree_, sidebar_ && !thumbnails_ ? SW_SHOW : SW_HIDE);
     ShowWindow(thumbs_, sidebar_ && thumbnails_ ? SW_SHOW : SW_HIDE);
     MoveWindow(canvas_, side, y, std::max(1, width - side), body, TRUE);
-    MoveWindow(status_, px(10), height - px(23), width - px(20), px(22), TRUE);
+    ShowWindow(status_, SW_HIDE);
     RECT cr{};
     GetClientRect(canvas_, &cr);
     for (auto &s : documents_)
@@ -455,10 +484,9 @@ void AppWindow::updateUi() {
     bool ready = s && !s->loading && s->info;
     for (auto [id, w] : toolbar_)
         if (id != Open && id != Sidebar && id != Help && id != Fullscreen && id != ZoomLabel &&
-            id != PageTotal && id != Undo && id != Redo && id != Draw && id != Palette && id != Marker &&
-            id != Eraser)
+            id != PageTotal && id != Undo && id != Redo && id != Draw && id != Palette && id != ClearInk && id != Eraser)
             enable(controls_[id], ready || (id == CloseTab && s));
-    for (int id : {Draw, Palette, Marker, Eraser})
+    for (int id : {Draw, Palette, Eraser, ClearInk})
         enable(controls_[id], ready && s->info->writable);
     enable(controls_[Undo], ready && s->annotations.canUndo());
     enable(controls_[Redo], ready && s->annotations.canRedo());
@@ -468,25 +496,31 @@ void AppWindow::updateUi() {
     setText(controls_[ZoomLabel],
             ready ? (std::to_wstring(static_cast<int>(std::lround(s->view.zoom * 100))) + L"%").c_str()
                   : L"—");
+    if (s) {
+        auto name = std::filesystem::path(s->path).filename().wstring() + (s->dirty ? L" *" : L"");
+        wchar_t prior[512]{};
+        TCITEMW tab{}; tab.mask=TCIF_TEXT; tab.pszText=prior; tab.cchTextMax=512;
+        TabCtrl_GetItem(tabs_,active_,&tab);
+        if (name != prior) { tab.pszText=name.data(); TabCtrl_SetItem(tabs_,active_,&tab); }
+    }
     std::wstring status = s ? s->status : L"打开 PDF，开始阅读与批注 · Ctrl+O 打开 · F11 全屏";
     if (ready && isOfficeDocument(s->path))
         status = (s->info->nativeOffice ? L"Word 原生阅读 · " : L"Word PDF兼容阅读 · ") + status;
     if (ready) {
         status += L"    ";
-        status += drawing_ ? (tool_ == Tool::Eraser   ? L"橡皮：整笔擦除"
-                              : tool_ == Tool::Marker ? L"荧光笔：单指绘制 / 双指移动缩放"
-                                                      : L"画笔：单指绘制 / 双指移动缩放")
+        status += pen_.editing() ? (pen_.tool() == AnnotationTool::Eraser ? L"橡皮：整笔擦除"
+                                                     : L"画笔：单指绘制 / 双指移动缩放")
                            : L"阅读：单指拖动 / 双指缩放";
         if (!s->hits.empty())
             status += (s->info->nativeOffice ? L"    匹配页 " : L"    搜索 ") +
                       std::to_wstring(s->hitIndex + 1) + L" / " + std::to_wstring(s->hits.size());
     }
     setText(status_, status.c_str());
-    const unsigned state = unsigned(drawing_) | (unsigned(tool_) << 1) | (unsigned(sidebar_) << 4) |
+    const unsigned state = static_cast<unsigned>(pen_.tool()) | (unsigned(sidebar_) << 4) |
                            (unsigned(thumbnails_) << 5);
     if (state != toolbarState_) {
         toolbarState_ = state;
-        for (int id : {Draw, Marker, Eraser, Sidebar, OutlineTab, ThumbnailTab})
+        for (int id : {Draw, Eraser, Sidebar, OutlineTab, ThumbnailTab})
             InvalidateRect(controls_[id], nullptr, FALSE);
     }
     if (ready) {
@@ -497,6 +531,11 @@ void AppWindow::updateUi() {
         info.nPage = static_cast<UINT>(std::min(1000001., s->view.height / h * 1000000));
         info.nPos = static_cast<int>(s->view.scrollY / h * 1000000);
         SetScrollInfo(canvas_, SB_VERT, &info, TRUE);
+        double w = std::max(1.,s->view.contentWidth());
+        info.fMask |= SIF_DISABLENOSCROLL;
+        info.nPage = static_cast<UINT>(std::min(1000001.,s->view.width / w * 1000001));
+        info.nPos = static_cast<int>(s->view.scrollX/w*1000000);
+        SetScrollInfo(canvas_, SB_HORZ, &info, TRUE);
     } else {
         SCROLLINFO info{sizeof(info), SIF_RANGE | SIF_PAGE | SIF_POS};
         info.nMax = 0;
@@ -504,9 +543,10 @@ void AppWindow::updateUi() {
     }
 }
 void AppWindow::activate(int index) {
+    stopMotion();
     input_.cancel();
     if (auto *old = active()) {
-        save(*old);
+        saveView(*old);
     }
     active_ = index;
     TabCtrl_SetCurSel(tabs_, index);
@@ -535,7 +575,7 @@ void AppWindow::openFile(const std::wstring &path) {
             return;
         }
     if (!isSupportedDocument(full)) {
-        MessageBoxW(window_, L"支持打开 PDF、Word / WPS 的 DOC 和 DOCX 文档。", L"不支持的格式",
+        MessageBoxW(window_, L"支持 PDF、DOC、DOCX 和 PNG、JPEG、BMP、GIF、TIFF、WebP 图片。", L"不支持的格式",
                     MB_ICONINFORMATION);
         return;
     }
@@ -562,23 +602,8 @@ void AppWindow::closeTab(int index) {
         return;
     input_.cancel();
     auto &s = *documents_[index];
-    save(s);
-    saver_->flush();
-    for (auto &r : saver_->take()) {
-        if (auto *doc = byId(r.document)) {
-            if (r.kind == WorkerResult::Kind::SaveFailed) {
-                doc->saveFailed = true;
-                doc->dirty = true;
-                doc->status = L"保存失败，请按 Ctrl+S 重试";
-            } else if (r.token == doc->revision) {
-                doc->saveFailed = false;
-                doc->status = L"已自动保存到本机";
-            }
-        }
-    }
-    if (s.saveFailed && MessageBoxW(window_, L"批注保存失败。仍然关闭此标签页会丢失未保存的修改。是否关闭？",
-                                    L"批注未保存", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
-        return;
+    if (!confirmClose(s)) return;
+    saveView(s);
     officePdf_->cancel(s.id);
     scheduler_->close(s.id);
     cache_.removeDocument(s.id);
@@ -599,8 +624,7 @@ void AppWindow::openDialog() {
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = window_;
-    ofn.lpstrFilter = L"支持的文档 (*.pdf;*.doc;*.docx)\0*.pdf;*.doc;*.docx\0PDF 文档\0*.pdf\0Word / WPS "
-                      L"文档\0*.doc;*.docx\0所有文件\0*.*\0";
+    ofn.lpstrFilter = L"文档和图片\0*.pdf;*.doc;*.docx;*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff;*.webp\0图片\0*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff;*.webp\0所有文件\0*.*\0";
     ofn.lpstrFile = buffer.data();
     ofn.nMaxFile = static_cast<DWORD>(buffer.size());
     ofn.Flags = OFN_EXPLORER | OFN_ALLOWMULTISELECT | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
@@ -616,30 +640,47 @@ void AppWindow::openDialog() {
             p += wcslen(p) + 1;
         }
 }
-void AppWindow::save(DocumentSession &s) {
-    if (s.loading || !s.info || !s.info->writable || !s.dirty)
-        return;
-    ++s.revision;
-    saver_->save(s.id, s.info->fingerprint, {s.annotations.pages(), s.view.state()}, s.revision);
-    s.status = L"正在保存本地批注…";
-    s.dirty = false;
-}
-void AppWindow::viewChanged() {
-    if (auto *s = active()) {
-        s->dirty = true;
-        SetTimer(window_, 2, 1000, nullptr);
+bool AppWindow::save(DocumentSession &s) {
+    if (!s.info || !s.info->writable) return false;
+    try {
+        AnnotationRepository(storage_).save(s.info->fingerprint, {s.annotations.pages(), s.view.state()});
+        s.dirty = false;
+        s.status = L"批注已保存";
+        return true;
+    } catch (const std::exception &e) {
+        MessageBoxW(window_, (L"保存失败，文档仍然打开。\n" + utf16(e.what())).c_str(), L"保存批注", MB_ICONERROR);
+        return false;
     }
+}
+bool AppWindow::confirmClose(DocumentSession &s) {
+    if (!s.dirty) return true;
+    auto msg = L"保存对「" + std::filesystem::path(s.path).filename().wstring() +
+               L"」的批注更改吗？\n\n选择“否”将放弃自上次保存以来的更改。";
+    int choice = MessageBoxW(window_, msg.c_str(), L"保存笔迹", MB_YESNOCANCEL | MB_ICONQUESTION);
+    return choice == IDNO || (choice == IDYES && save(s));
+}
+void AppWindow::saveView(DocumentSession &s) {
+    if (!s.info) return;
+    auto v = s.view.state();
+    auto folder = storage_.parent_path() / L"views";
+    std::error_code ec;
+    std::filesystem::create_directories(folder, ec);
+    std::ofstream out(folder / s.info->fingerprint);
+    out << v.page << ' ' << v.rotation << ' ' << v.offset << ' ' << v.zoom << ' ' << v.fit;
 }
 void AppWindow::refresh(bool interacting) {
     if (interacting) {
-        interactionUntil_ = GetTickCount64() + 140;
-        SetTimer(window_, 1, 150, nullptr);
+        interactionUntil_ = GetTickCount64() + 65;
+        SetTimer(window_, 1, 65, nullptr);
+    } else {
+        interactionUntil_ = 0;
+        KillTimer(window_, 1);
     }
     schedule(interacting && settings_.blurLevel != 0);
     InvalidateRect(canvas_, nullptr, FALSE);
     updateUi();
 }
-void AppWindow::schedule(bool previewOnly) {
+void AppWindow::schedule(bool interacting) {
     std::vector<RenderRequest> requests;
     auto *s = active();
     if (!s || s->loading || !s->info) {
@@ -651,19 +692,32 @@ void AppWindow::schedule(bool previewOnly) {
         if (seen.insert(key).second && !cache_.get(key) && !failedTiles_.count(key))
             requests.push_back({key, priority});
     };
-    int scale = std::max(1, static_cast<int>(std::lround(s->view.zoom * 64)));
-    for (int page : s->view.visible(80)) {
+    int scale = detailScale(*s);
+    const double factor = s->view.zoom / (scale / 64.);
+    const Rect viewport{0, 0, s->view.width, s->view.height};
+    bool gavePreviewPriority = false;
+    for (int page : s->view.visible()) {
         auto r = s->view.pageRect(page);
-        add({s->id, page, previewScale(), s->view.rotation, 0, 0}, 0);
-        if (!previewOnly) {
-            double factor = (scale / 64.) / s->view.zoom;
-            int x0 = std::max(0, static_cast<int>(std::floor(-r.x * factor / 512))),
-                y0 = std::max(0, static_cast<int>(std::floor(-r.y * factor / 512)));
-            int x1 = static_cast<int>(std::ceil(std::min(r.w, s->view.width - r.x) * factor / 512)),
-                y1 = static_cast<int>(std::ceil(std::min(r.h, s->view.height - r.y) * factor / 512));
-            for (int y = y0; y < y1; ++y)
-                for (int x = x0; x < x1; ++x)
-                    add({s->id, page, scale, s->view.rotation, x, y}, 10 + std::abs(y - y0));
+        if (!r.intersects(viewport))
+            continue;
+        const double step = 512 * factor;
+        int x0 = std::max(0, static_cast<int>(std::floor(-r.x / step))),
+            y0 = std::max(0, static_cast<int>(std::floor(-r.y / step)));
+        int x1 = static_cast<int>(std::ceil(std::min(r.w, viewport.w - r.x) / step)),
+            y1 = static_cast<int>(std::ceil(std::min(r.h, viewport.h - r.y) / step));
+        auto before = requests.size();
+        for (int y = y0; y < y1; ++y)
+            for (int x = x0; x < x1; ++x) {
+                auto priority = distance({r.x + (x + .5) * step, r.y + (y + .5) * step},
+                                         {viewport.w / 2, viewport.h / 2});
+                add({s->id, page, scale, s->view.rotation, x, y}, 1 + std::min(50, int(priority / 64)));
+            }
+        if (requests.size() != before) {
+            bool quickPreview = interacting && settings_.blurLevel && !s->info->nativeOffice &&
+                                !gavePreviewPriority;
+            auto beforePreview = requests.size();
+            add({s->id, page, previewScale(), s->view.rotation, 0, 0}, quickPreview ? 0 : 60);
+            gavePreviewPriority |= requests.size() != beforePreview;
         }
     }
     if (sidebar_ && thumbnails_) {
@@ -679,6 +733,8 @@ void AppWindow::schedule(bool previewOnly) {
 void AppWindow::paint() {
     PAINTSTRUCT ps{};
     BeginPaint(canvas_, &ps);
+    Rect dirty{double(ps.rcPaint.left), double(ps.rcPaint.top),
+               double(ps.rcPaint.right - ps.rcPaint.left), double(ps.rcPaint.bottom - ps.rcPaint.top)};
     if (renderer_->begin(ps.rcPaint)) {
         RECT client{};
         GetClientRect(canvas_, &client);
@@ -688,15 +744,17 @@ void AppWindow::paint() {
         if (!s) {
             renderer_->text(L"PDF view", {60, 65, 600, 40}, 0x1e293b);
             renderer_->text(L"将 PDF、DOC 或 DOCX "
-                            L"拖到窗口，或点击左上角文件夹图标\n\n顶部“绘制”按钮开启手写批注\n单指书写 · "
-                            L"双指移动和缩放\n\n批注自动保存在这台电脑中",
+                            L"拖到窗口，或点击左上角文件夹图标\n\n顶部“画笔”按钮开启手写批注\n单指书写 · "
+                            L"双指移动和缩放\n\nCtrl+S 保存批注，关闭时可选择放弃",
                             {60, 120, 750, 300});
         } else if (s->loading)
             renderer_->text(L"正在打开文档…", {60, 70, 650, 80});
         else if (s->info) {
-            int scale = std::max(1, static_cast<int>(std::lround(s->view.zoom * 64)));
+            int scale = detailScale(*s);
             for (int p : s->view.visible()) {
                 auto r = s->view.pageRect(p);
+                if (!Rect{r.x, r.y, r.w + 3, r.h + 3}.intersects(dirty))
+                    continue;
                 renderer_->fill({r.x + 3, r.y + 3, r.w, r.h}, 0xcbd0d8);
                 renderer_->fill(r, 0xffffff);
                 renderer_->pushClip(r);
@@ -704,22 +762,20 @@ void AppWindow::paint() {
                 auto low = cache_.get(preview);
                 if (low)
                     renderer_->bitmap(preview, low, r);
-                else
-                    renderer_->text(failedTiles_.count(preview) ? L"此页渲染失败" : L"正在加载…",
-                                    {r.x + 24, r.y + 24, r.w - 48, 40});
                 double factor = s->view.zoom / (scale / 64.);
-                int x0 = std::max(0, static_cast<int>(std::floor(-r.x / factor / 512))),
-                    y0 = std::max(0, static_cast<int>(std::floor(-r.y / factor / 512)));
-                int x1 = static_cast<int>(std::ceil(std::min(r.w, s->view.width - r.x) / factor / 512)),
-                    y1 = static_cast<int>(std::ceil(std::min(r.h, s->view.height - r.y) / factor / 512));
+                int x0 = std::max(0, static_cast<int>(std::floor((dirty.x - r.x) / factor / 512))),
+                    y0 = std::max(0, static_cast<int>(std::floor((dirty.y - r.y) / factor / 512)));
+                int x1 = static_cast<int>(std::ceil(std::min(r.w, dirty.x + dirty.w - r.x) / factor / 512)),
+                    y1 = static_cast<int>(std::ceil(std::min(r.h, dirty.y + dirty.h - r.y) / factor / 512));
                 for (int y = y0; y < y1; ++y)
                     for (int x = x0; x < x1; ++x) {
                         TileKey key{s->id, p, scale, s->view.rotation, x, y};
                         auto tile = cache_.get(key);
-                        if (tile)
-                            renderer_->bitmap(key, tile,
-                                              {r.x + x * 512 * factor, r.y + y * 512 * factor,
-                                               tile->width * factor, tile->height * factor});
+                        if (tile) {
+                            renderer_->bitmap(key, tile, tileRect(r, key, factor, *tile));
+                        } else if (!low && failedTiles_.count(key)) {
+                            renderer_->text(L"此页渲染失败", {r.x + 24, r.y + 24, r.w - 48, 40});
+                        }
                     }
                 if (s->hitIndex >= 0 && s->hitIndex < static_cast<int>(s->hits.size())) {
                     auto &hit = s->hits[s->hitIndex];
@@ -732,13 +788,13 @@ void AppWindow::paint() {
                                             0xf59e0b, .3f);
                         }
                 }
-                for (auto &stroke : s->annotations.page(p))
-                    if (!eraseIds_.count(stroke->id))
-                        renderer_->stroke(s->id, *stroke, s->view);
-                if (live_ && live_->page == p)
-                    renderer_->stroke(s->id, *live_, s->view, true);
                 renderer_->popClip();
             }
+            for (const auto &[page, entries] : s->annotations.pages())
+                for (const auto &stroke : entries)
+                    if (!eraseIds_.count(stroke->id) && s->view.strokeVisible(*stroke))
+                        renderer_->stroke(s->id, *stroke, s->view);
+            if (live_) renderer_->stroke(s->id, *live_, s->view, true);
         }
         renderer_->end();
     } else
@@ -758,46 +814,45 @@ void AppWindow::beginStroke(Point p) {
     auto *s = active();
     if (!s || !s->info || !s->info->writable)
         return;
-    auto location = s->view.pageAt(p);
-    if (!location)
+    int anchor = s->view.nearestPage(p);
+    if (anchor < 0)
         return;
     lastPointer_ = p;
-    if (tool_ == Tool::Eraser) {
-        erasePage_ = location->first;
+    if (pen_.tool() == AnnotationTool::Eraser) {
+        erasePage_ = anchor;
         appendStroke(p);
         return;
     }
     live_ = Stroke{};
-    live_->page = location->first;
-    live_->kind = tool_ == Tool::Marker ? PenKind::Highlighter : PenKind::Ink;
-    live_->color = tool_ == Tool::Marker ? markerColor_ : inkColor_;
-    live_->width = tool_ == Tool::Marker ? markerWidth_ : inkWidth_;
-    live_->points.push_back(location->second);
+    live_->page = anchor;
+    live_->kind = PenKind::Ink;
+    live_->color = settings_.penColor;
+    live_->width = effectivePenWidth(s,p);
+    live_->points.push_back(s->view.pagePoint(anchor,p));
     invalidateInk(p, p, live_->width * s->view.zoom);
 }
 void AppWindow::appendStroke(Point p) {
     auto *s = active();
     if (!s || !s->info)
         return;
-    auto loc = s->view.pageAt(p);
-    if (!loc)
-        return;
-    if (erasePage_ >= 0 && loc->first == erasePage_) {
+    if (erasePage_ >= 0) {
         bool changed = false;
-        for (auto &stroke : s->annotations.page(erasePage_))
-            if (stroke->hit(loc->second, 12 / s->view.zoom))
-                changed = eraseIds_.insert(stroke->id).second || changed;
-        if (changed)
-            InvalidateRect(canvas_, nullptr, FALSE);
+        for (const auto &[page, strokes] : s->annotations.pages()) {
+            if (page >= s->view.count()) continue;
+            auto point = s->view.pagePoint(page, p);
+            for (const auto &stroke : strokes)
+                if (stroke->hit(point, 12 / s->view.zoom))
+                    changed = eraseIds_.insert(stroke->id).second || changed;
+        }
+        if (changed) InvalidateRect(canvas_, nullptr, FALSE);
         return;
     }
-    if (!live_ || loc->first != live_->page)
-        return;
-    if (distance(live_->points.back(), loc->second) * s->view.zoom < .55)
-        return;
+    if (!live_) return;
+    auto point = s->view.pagePoint(live_->page,p);
+    if (distance(live_->points.back(), point) * s->view.zoom < .55) return;
     auto prev = s->view.screenPoint(live_->page, live_->points.back());
-    live_->points.push_back(loc->second);
-    invalidateInk(prev, p, live_->width * s->view.zoom);
+    live_->points.push_back(point);
+    invalidateInk(prev,p,live_->width*s->view.zoom);
     lastPointer_ = p;
 }
 void AppWindow::commitStroke() {
@@ -812,14 +867,15 @@ void AppWindow::commitStroke() {
     }
     if (!eraseIds_.empty())
         changed =
-            s->annotations.eraseIds(erasePage_, std::vector<uint64_t>(eraseIds_.begin(), eraseIds_.end())) ||
+            s->annotations.removeWhere([&](const Stroke &stroke) { return eraseIds_.count(stroke.id) != 0; }) ||
             changed;
     eraseIds_.clear();
     erasePage_ = -1;
     renderer_->clearLive();
     if (changed) {
+        s->view.includeInk(s->annotations.pages());
         s->dirty = true;
-        save(*s);
+        s->status = L"批注尚未保存";
         updateUi();
     }
     InvalidateRect(canvas_, nullptr, FALSE);
@@ -835,11 +891,6 @@ void AppWindow::cancelStroke() {
 }
 void AppWindow::processResults() {
     auto results = scheduler_->take();
-    auto saved = saver_->take();
-    while (!saved.empty()) {
-        results.push_back(std::move(saved.front()));
-        saved.pop_front();
-    }
     for (auto &r : results) {
         auto *s = byId(r.document);
         switch (r.kind) {
@@ -870,8 +921,16 @@ void AppWindow::processResults() {
             s->info = r.info;
             s->loading = false;
             s->view.setPages(r.info->sizes);
-            s->view.restore(r.info->saved.view);
+            auto view = r.info->saved.view;
+            std::ifstream position(storage_.parent_path() / L"views" / r.info->fingerprint);
+            ViewState restored;
+            if (position >> restored.page >> restored.rotation >> restored.offset >> restored.zoom >> restored.fit &&
+                restored.rotation >= 0 && restored.rotation <= 3 && std::isfinite(restored.offset) &&
+                std::isfinite(restored.zoom) && restored.zoom >= .1 && restored.zoom <= 16)
+                view = restored;
+            s->view.restore(view);
             s->annotations.restore(r.info->saved.pages);
+            s->view.includeInk(s->annotations.pages());
             s->status = r.info->writable ? L"本地批注已就绪" : L"批注数据异常：只读";
             if (r.info->nativeOffice)
                 s->status += L" · " + r.info->officeEngine + L" 原生页面 · 支持手写批注";
@@ -916,14 +975,17 @@ void AppWindow::processResults() {
         case WorkerResult::Kind::Rendered:
             if (s) {
                 cache_.put(r.key, r.tile);
-                if (s == active()) {
-                    auto page = s->view.pageRect(r.key.page);
-                    RECT dirty{static_cast<LONG>(page.x), static_cast<LONG>(page.y),
-                               static_cast<LONG>(page.x + page.w + 1),
-                               static_cast<LONG>(page.y + page.h + 1)};
-                    InvalidateRect(canvas_, &dirty, FALSE);
-                    if (r.key.scale < 0)
+                if (s == active() && s->info && r.key.rotation == s->view.rotation) {
+                    if (r.key.scale == -1) {
                         InvalidateRect(thumbs_, nullptr, FALSE);
+                    } else if (r.key.scale == detailScale(*s) || r.key.scale == previewScale()) {
+                        auto area = s->view.pageRect(r.key.page);
+                        if (r.key.scale > 0)
+                            area = tileRect(area, r.key, s->view.zoom / (r.key.scale / 64.), *r.tile);
+                        RECT dirty{LONG(std::floor(area.x)), LONG(std::floor(area.y)),
+                                   LONG(std::ceil(area.x + area.w)), LONG(std::ceil(area.y + area.h))};
+                        InvalidateRect(canvas_, &dirty, FALSE);
+                    }
                 }
             }
             break;
@@ -950,21 +1012,6 @@ void AppWindow::processResults() {
             else
                 MessageBoxW(window_, L"此页没有可提取文字。扫描图片不能直接复制文字。", L"复制本页文字",
                             MB_OK);
-            break;
-        case WorkerResult::Kind::Saved:
-            if (s && r.token == s->revision) {
-                s->status = L"已自动保存到本机";
-                s->saveFailed = false;
-            }
-            break;
-        case WorkerResult::Kind::SaveFailed:
-            if (s) {
-                s->status = L"保存失败，请按 Ctrl+S 重试";
-                s->dirty = true;
-                s->saveFailed = true;
-            }
-            MessageBoxW(window_, (L"批注尚未保存，请检查磁盘空间或目录权限。\n" + r.message).c_str(),
-                        L"保存失败", MB_OK | MB_ICONERROR);
             break;
         case WorkerResult::Kind::Fatal:
             MessageBoxW(window_, r.message.c_str(), L"运行错误", MB_OK | MB_ICONERROR);
@@ -1077,7 +1124,29 @@ void AppWindow::nextHit(int delta) {
         s->view.clamp();
     }
     refresh();
-    viewChanged();
+
+}
+void AppWindow::stopMotion() {
+    KillTimer(window_, 4);
+    wheelVelocity_ = {}; touchVelocity_ = {};
+    motionTick_ = 0; touchTick_ = GetTickCount64();
+}
+void AppWindow::startMotion(Point velocity) {
+    wheelVelocity_.x = std::clamp(wheelVelocity_.x + velocity.x, -7000., 7000.);
+    wheelVelocity_.y = std::clamp(wheelVelocity_.y + velocity.y, -7000., 7000.);
+    if (!motionTick_) motionTick_ = GetTickCount64();
+    SetTimer(window_,4,12,nullptr);
+}
+void AppWindow::trackPan(Point delta) {
+    auto now = GetTickCount64();
+    double dt = std::clamp(double(now-touchTick_)/1000., .008, .08);
+    touchVelocity_.x = .55*touchVelocity_.x - .45*delta.x/dt;
+    touchVelocity_.y = .55*touchVelocity_.y - .45*delta.y/dt;
+    touchTick_ = now;
+}
+void AppWindow::finishTouch() {
+    if (!input_.active() && GetTickCount64()-touchTick_ < 85 && distance(touchVelocity_,{}) > 90)
+        startMotion(touchVelocity_);
 }
 void AppWindow::scroll(WPARAM w) {
     auto *s = active();
@@ -1115,7 +1184,7 @@ void AppWindow::scroll(WPARAM w) {
     }
     v.clamp();
     refresh(true);
-    viewChanged();
+
 }
 void AppWindow::toggleFullscreen() {
     if (!fullscreen_) {
@@ -1135,16 +1204,42 @@ void AppWindow::toggleFullscreen() {
     }
 }
 void AppWindow::palette() {
-    bool marker = tool_ == Tool::Marker;
-    PenPalette panel(marker ? markerColor_ : inkColor_, marker ? markerWidth_ : inkWidth_, marker);
+    auto *s = active();
+    auto screen = screenMetrics(canvas_, settings_);
+    double zoom = s ? s->view.zoom : 1.;
+    uint32_t color = settings_.penColor;
+    float width = static_cast<float>(settings_.autoPenWidth ? PenController::targetMm(settings_, beijingDay())
+                                                           : settings_.penWidth);
+    PenPalette panel(color, width, settings_.autoPenWidth, screen.pixelsPerMm);
     paletteOpen_ = true;
     panel.show(window_, controls_[Palette]);
     paletteOpen_ = false;
+    if (panel.widthChanged())
+        PenController::rememberWidth(settings_, width, zoom, screen.pixelsPerMm, beijingDay());
+    if (panel.widthChanged() || color != settings_.penColor) {
+        settings_.penColor = color;
+        savePenSettings();
+    }
     InvalidateRect(controls_[Draw], nullptr, FALSE);
-    InvalidateRect(controls_[Marker], nullptr, FALSE);
     SetFocus(canvas_);
 }
+void AppWindow::clearInk(int scope) {
+    auto *s = active();
+    if (!s || !s->info || !s->info->writable || scope < 1 || scope > 3) return;
+    bool changed = scope == 3 ? s->annotations.clearView(s->view) :
+        s->annotations.removeWhere([&](const Stroke &stroke) {
+            return scope == 1 || stroke.page == s->view.currentPage();
+        });
+    if (changed) {
+        s->view.includeInk(s->annotations.pages());
+        s->dirty = true;
+        s->status = L"已清除笔迹，可撤销";
+    }
+}
 void AppWindow::command(int id) {
+    if (clearDialogOpen_)
+        return;
+    stopMotion();
     auto *s = active();
     switch (id) {
     case Open:
@@ -1194,53 +1289,62 @@ void AppWindow::command(int id) {
     input_.cancel();
     switch (id) {
     case Save:
-        s->dirty = true;
         save(*s);
         break;
     case Draw:
-        drawing_ = !drawing_;
-        break;
-    case Marker:
-        tool_ = tool_ == Tool::Marker ? Tool::Pen : Tool::Marker;
-        drawing_ = true;
+        pen_.select(AnnotationTool::Pen);
         break;
     case Eraser:
-        tool_ = tool_ == Tool::Eraser ? Tool::Pen : Tool::Eraser;
-        drawing_ = true;
+        pen_.select(AnnotationTool::Eraser);
         break;
+    case ClearInk: {
+        if (!s->info->writable)
+            break;
+        const int document = s->id;
+        clearDialogOpen_ = true;
+        SendMessageW(tooltips_, TTM_ACTIVATE, FALSE, 0);
+        const int choice = showClearInkDialog(window_, settings_);
+        SendMessageW(tooltips_, TTM_ACTIVATE, TRUE, 0);
+        clearDialogOpen_ = false;
+        if (active() && active()->id == document)
+            clearInk(choice);
+        break;
+    }
     case Palette:
         palette();
         break;
     case Undo:
         if (s->annotations.undo()) {
+            s->view.includeInk(s->annotations.pages());
             s->dirty = true;
-            save(*s);
+            s->status = L"批注尚未保存";
         }
         break;
     case Redo:
         if (s->annotations.redo()) {
+            s->view.includeInk(s->annotations.pages());
             s->dirty = true;
-            save(*s);
+            s->status = L"批注尚未保存";
         }
         break;
     case ZoomOut:
         s->view.setZoom(s->view.zoom / 1.2, {s->view.width / 2, s->view.height / 2});
-        viewChanged();
+
         break;
     case ZoomIn:
         s->view.setZoom(s->view.zoom * 1.2, {s->view.width / 2, s->view.height / 2});
-        viewChanged();
+
         break;
     case Fit: {
         auto state = s->view.state();
         s->view.fitWidth();
         s->view.goTo(state.page);
-        viewChanged();
+
         break;
     }
     case Rotate:
         s->view.setRotation(s->view.rotation + 1);
-        viewChanged();
+
         break;
     }
     refresh();
@@ -1330,7 +1434,7 @@ void AppWindow::drawItem(const DRAWITEMSTRUCT &i) {
         RECT iconRect = i.rcItem;
         iconRect.right = iconRect.left + px(36);
         toolbarPainter_->draw(i.hDC, iconRect, ToolbarIcon::Open, false, false, false, false, false,
-                              inkColor_, dpi_);
+                              settings_.penColor, dpi_);
         wchar_t text[512]{};
         TCITEMW item{};
         item.mask = TCIF_TEXT;
@@ -1348,17 +1452,17 @@ void AppWindow::drawItem(const DRAWITEMSTRUCT &i) {
     }
     if (i.CtlType == ODT_BUTTON) {
         bool selected =
-            (i.CtlID == Draw && drawing_) || (i.CtlID == Marker && drawing_ && tool_ == Tool::Marker) ||
-            (i.CtlID == Eraser && drawing_ && tool_ == Tool::Eraser) || (i.CtlID == Sidebar && sidebar_) ||
+            (i.CtlID == Draw && pen_.tool() == AnnotationTool::Pen) ||
+            (i.CtlID == Eraser && pen_.tool() == AnnotationTool::Eraser) || (i.CtlID == Sidebar && sidebar_) ||
             (i.CtlID == OutlineTab && !thumbnails_) || (i.CtlID == ThumbnailTab && thumbnails_);
         auto icon = icons_.find(i.CtlID);
         if (icon == icons_.end())
             return;
         bool disabled = i.itemState & ODS_DISABLED;
         bool focus = (i.itemState & ODS_FOCUS) && !(i.itemState & ODS_NOFOCUSRECT);
-        toolbarPainter_->draw(i.hDC, i.rcItem, icon->second, selected, hotButton_ == i.hwndItem,
+        toolbarPainter_->draw(i.hDC, i.rcItem, icon->second, selected, hotButton_ == i.hwndItem && i.CtlID != Draw && i.CtlID != Eraser,
                               i.itemState & ODS_SELECTED, disabled, focus,
-                              i.CtlID == Marker ? markerColor_ : inkColor_, dpi_, i.CtlID == Draw);
+                              settings_.penColor, dpi_, i.CtlID == Draw);
         if (i.CtlID == Draw) {
             RECT text = i.rcItem;
             text.left += px(36);
@@ -1366,9 +1470,9 @@ void AppWindow::drawItem(const DRAWITEMSTRUCT &i) {
             SelectObject(i.hDC, font_);
             SetBkMode(i.hDC, TRANSPARENT);
             SetTextColor(i.hDC, disabled   ? RGB(185, 189, 194)
-                                : selected ? RGB(32, 88, 152)
+                                : selected ? RGB(255, 255, 255)
                                            : RGB(80, 84, 90));
-            DrawTextW(i.hDC, L"绘制", -1, &text, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+            DrawTextW(i.hDC, L"画笔", -1, &text, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
         }
         return;
     }
@@ -1409,17 +1513,8 @@ void AppWindow::shutdown() {
         return;
     input_.cancel();
     for (auto &s : documents_)
-        save(*s);
-    saver_->flush();
-    processResults();
-    for (auto &s : documents_)
-        if (s->saveFailed) {
-            if (MessageBoxW(window_,
-                            L"部分批注尚未成功保存。仍然关闭会丢失这些未保存的修改。\n是否仍然关闭？",
-                            L"批注未保存", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
-                return;
-            break;
-        }
+        if (!confirmClose(*s)) return;
+    for (auto &s : documents_) saveView(*s);
     closing_ = true;
     saveSession();
     KillTimer(window_, 1);
@@ -1427,7 +1522,6 @@ void AppWindow::shutdown() {
     KillTimer(window_, 3);
     officePdf_.reset();
     scheduler_.reset();
-    saver_.reset();
     DestroyWindow(window_);
 }
 bool AppWindow::key(MSG &m) {
@@ -1443,7 +1537,7 @@ bool AppWindow::key(MSG &m) {
                 input_.cancel();
                 s->view.goTo(p - 1);
                 refresh();
-                viewChanged();
+
             }
         }
         SetFocus(canvas_);
@@ -1535,7 +1629,7 @@ bool AppWindow::key(MSG &m) {
             find_ = false;
             layout();
         } else {
-            drawing_ = false;
+            pen_.read();
             updateUi();
         }
         return true;
@@ -1646,7 +1740,7 @@ LRESULT AppWindow::message(UINT m, WPARAM a, LPARAM b) {
                 int p = static_cast<int>(SendMessageW(thumbs_, LB_GETCURSEL, 0, 0));
                 s->view.goTo(p);
                 refresh();
-                viewChanged();
+
             }
             return 0;
         }
@@ -1666,7 +1760,7 @@ LRESULT AppWindow::message(UINT m, WPARAM a, LPARAM b) {
             if (auto *s = active(); s && n->itemNew.lParam >= 0) {
                 s->view.goTo(static_cast<int>(n->itemNew.lParam));
                 refresh();
-                viewChanged();
+
             }
             return 0;
         }
@@ -1705,20 +1799,31 @@ LRESULT AppWindow::message(UINT m, WPARAM a, LPARAM b) {
             processOfficePdf();
         return 0;
     case RenderScheduler::ReadyMessage:
-        if (scheduler_ && saver_)
+        if (scheduler_)
             processResults();
         return 0;
     case WM_TIMER:
+        if (a == 4) {
+            auto *doc = active();
+            auto now = GetTickCount64();
+            double dt = std::clamp(double(now-motionTick_)/1000., .001, .08);
+            motionTick_ = now;
+            double decay = std::exp(-9.*dt);
+            if (!doc || distance(wheelVelocity_,{}) < 9.) { stopMotion(); return 0; }
+            auto before = Point{doc->view.scrollX,doc->view.scrollY};
+            doc->view.scrollX += wheelVelocity_.x*(1-decay)/9.;
+            doc->view.scrollY += wheelVelocity_.y*(1-decay)/9.;
+            wheelVelocity_ = {wheelVelocity_.x*decay,wheelVelocity_.y*decay};
+            doc->view.clamp();
+            if (distance(before,{doc->view.scrollX,doc->view.scrollY}) < .001) stopMotion();
+            else refresh(true);
+            return 0;
+        }
         if (a == 1) {
             if (GetTickCount64() >= interactionUntil_) {
                 KillTimer(window_, 1);
                 schedule(false);
             }
-        } else if (a == 2) {
-            KillTimer(window_, 2);
-            if (auto *s = active())
-                save(*s);
-            updateUi();
         } else if (a == 3 && sidebar_ && thumbnails_) {
             int top = static_cast<int>(SendMessageW(thumbs_, LB_GETTOPINDEX, 0, 0));
             if (top != lastThumbTop_) {
@@ -1754,6 +1859,8 @@ LRESULT AppWindow::message(UINT m, WPARAM a, LPARAM b) {
         return 1;
     }
     case WM_CLOSE:
+        if (clearDialogOpen_)
+            return 0;
         shutdown();
         return 0;
     case WM_DESTROY:
@@ -1782,30 +1889,49 @@ LRESULT AppWindow::canvasMessage(UINT m, WPARAM a, LPARAM b) {
         if (renderer_)
             renderer_->resize();
         return 0;
+    case WM_HSCROLL:
+        if (s && s->info) {
+            stopMotion();
+            auto &v = s->view;
+            SCROLLINFO si{sizeof(si), SIF_TRACKPOS}; GetScrollInfo(canvas_, SB_HORZ, &si);
+            switch (LOWORD(a)) {
+            case SB_THUMBPOSITION: case SB_THUMBTRACK: v.scrollX = si.nTrackPos / 1000000. * v.contentWidth(); break;
+            case SB_LINELEFT: v.scrollX -= px(45); break;
+            case SB_LINERIGHT: v.scrollX += px(45); break;
+            case SB_PAGELEFT: v.scrollX -= v.width*.85; break;
+            case SB_PAGERIGHT: v.scrollX += v.width*.85; break;
+            case SB_LEFT: v.scrollX = 0; break;
+            case SB_RIGHT: v.scrollX = v.contentWidth(); break;
+            }
+            v.clamp(); refresh(true);
+        }
+        return 0;
     case WM_VSCROLL:
+        stopMotion();
         scroll(a);
         return 0;
     case WM_MOUSEWHEEL:
         if (s && s->info) {
             input_.cancel();
             if (GET_KEYSTATE_WPARAM(a) & MK_CONTROL) {
+                stopMotion();
                 POINT p{GET_X_LPARAM(b), GET_Y_LPARAM(b)};
                 ScreenToClient(canvas_, &p);
                 s->view.setZoom(s->view.zoom * std::pow(1.15, GET_WHEEL_DELTA_WPARAM(a) / 120.),
                                 {static_cast<double>(p.x), static_cast<double>(p.y)});
             } else
-                s->view.scrollY -= GET_WHEEL_DELTA_WPARAM(a) / 120. * px(120) * settings_.scrollSensitivity;
+                startMotion({0, -GET_WHEEL_DELTA_WPARAM(a) / 120. * px(1080) * settings_.scrollSensitivity});
             s->view.clamp();
             refresh(true);
-            viewChanged();
+
         }
         return 0;
     case WM_MOUSEHWHEEL:
         if (s) {
-            s->view.scrollX += GET_WHEEL_DELTA_WPARAM(a) / 120. * px(100) * settings_.scrollSensitivity;
+            startMotion({GET_WHEEL_DELTA_WPARAM(a) / 120. * px(900) * settings_.scrollSensitivity,0});
             s->view.clamp();
             refresh(true);
-            viewChanged();
+
         }
         return 0;
     case WM_LBUTTONDOWN:
@@ -1813,9 +1939,10 @@ LRESULT AppWindow::canvasMessage(UINT m, WPARAM a, LPARAM b) {
         if ((GetMessageExtraInfo() & 0xffffff00) == 0xff515700)
             return 0;
         SetFocus(canvas_);
+        stopMotion();
         SetCapture(canvas_);
         input_.down(0, {static_cast<double>(GET_X_LPARAM(b)), static_cast<double>(GET_Y_LPARAM(b))},
-                    m == WM_LBUTTONDOWN && drawing_);
+                    m == WM_LBUTTONDOWN && pen_.editing());
         return 0;
     case WM_MOUSEMOVE:
         if ((GetMessageExtraInfo() & 0xffffff00) == 0xff515700)
@@ -1849,21 +1976,41 @@ LRESULT AppWindow::canvasMessage(UINT m, WPARAM a, LPARAM b) {
             return 0;
         }
         if (m == WM_POINTERDOWN) {
+            stopMotion();
             SetFocus(canvas_);
-            input_.down(id, pos, drawing_);
-        } else if (m == WM_POINTERUPDATE)
-            input_.move(id, pos);
-        else
-            input_.up(id, pos);
+            input_.down(id, pos, pen_.editing());
+        } else if (m == WM_POINTERUPDATE && input_.multiTouch()) {
+            UINT32 count = 0;
+            GetPointerFrameInfo(id, &count, nullptr);
+            if (count && count <= 64) {
+                std::vector<POINTER_INFO> frame(count);
+                if (GetPointerFrameInfo(id,&count,frame.data())) {
+                    std::map<uint32_t,Point> contacts;
+                    for (const auto &sample : frame) {
+                        POINT q = sample.ptPixelLocation;
+                        ScreenToClient(canvas_,&q);
+                        contacts[sample.pointerId] = {double(q.x),double(q.y)};
+                    }
+                    input_.frame(contacts);
+                }
+            }
+        } else if (m == WM_POINTERUPDATE) input_.move(id,pos);
+        else {
+            input_.up(id,pos);
+            finishTouch();
+        }
         return 0;
     }
     case WM_POINTERCAPTURECHANGED:
+        // A normal pointer-up also releases capture; keep the other contact active.
+        if (!input_.hasPointer(GET_POINTERID_WPARAM(a))) return 0;
+        [[fallthrough]];
     case WM_CANCELMODE:
         input_.cancel();
         return 0;
     case WM_SETCURSOR:
         if (LOWORD(b) == HTCLIENT) {
-            SetCursor(LoadCursor(nullptr, drawing_ ? IDC_CROSS : IDC_ARROW));
+            SetCursor(LoadCursor(nullptr, pen_.editing() ? IDC_CROSS : IDC_ARROW));
             return TRUE;
         }
         break;

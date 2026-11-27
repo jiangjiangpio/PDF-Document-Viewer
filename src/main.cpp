@@ -1,4 +1,5 @@
 #include "app.hpp"
+#include "image_backend.hpp"
 #include <fstream>
 #include <shellapi.h>
 namespace paper {
@@ -51,6 +52,10 @@ int selfTest(const std::filesystem::path &path, const std::filesystem::path &out
         if (!detail || detail->width != 512)
             throw std::runtime_error("Tile render failed");
         writeBitmap(output / L"tile.bmp", *detail);
+        if (isImageDocument(path)) {
+            report << "image_rotation_and_detail_tiles=PASS\nRESULT=PASS\n";
+            return 0;
+        }
         auto hits = backend.search(1, L"Equation", [] { return false; });
         if (hits.empty())
             throw std::runtime_error("Text search failed");

@@ -64,12 +64,10 @@ void ToolbarPainter::icon(ToolbarIcon i, uint32_t accent) {
     case ToolbarIcon::Chevron:
         path({{8, 10}, {12, 14}, {16, 10}});
         break;
-    case ToolbarIcon::Marker:
-        path({{7, 4}, {17, 4}, {17, 10}, {14, 15}, {10, 15}, {7, 10}}, true);
-        path({{10, 15}, {10, 19}, {14, 17}, {14, 15}});
-        line(7, 9, 17, 9);
-        brush_->SetColor(D2D1::ColorF(accent));
-        line(3, 22, 21, 22);
+    case ToolbarIcon::Broom:
+        line(19, 2, 12, 11);
+        path({{8,8},{15,13},{12,20},{4,21},{2,18}}, true);
+        line(9,14,5,19); line(12,15,9,20);
         break;
     case ToolbarIcon::Eraser:
         path({{3, 14}, {13, 3}, {22, 11}, {12, 21}, {9, 21}}, true);
@@ -196,14 +194,14 @@ void ToolbarPainter::draw(HDC dc, RECT r, ToolbarIcon i, bool selected, bool hov
     auto box = D2D1::RoundedRect({2 * scale, 4 * scale, width - 2 * scale, height - 4 * scale}, 4 * scale,
                                  4 * scale);
     if (selected || hovered || pressed) {
-        brush_->SetColor(D2D1::ColorF(pressed ? 0xd6d8da : selected ? 0xe1e9f3 : 0xe9e9e9));
+        brush_->SetColor(D2D1::ColorF(pressed ? 0xd6d8da : selected ? 0x185abd : 0xe9e9e9));
         target_->FillRoundedRectangle(box, brush_);
     }
     if (focused) {
         brush_->SetColor(D2D1::ColorF(0x2563eb));
         target_->DrawRoundedRectangle(box, brush_, scale);
     }
-    brush_->SetColor(D2D1::ColorF(disabled ? 0xb9bdc2 : selected ? 0x205898 : 0x50545a));
+    brush_->SetColor(D2D1::ColorF(disabled ? 0xb9bdc2 : selected ? 0xffffff : 0x50545a));
     float size = 21 * scale;
     float x = label ? 10 * scale : (width - size) / 2;
     float y = (height - size) / 2;

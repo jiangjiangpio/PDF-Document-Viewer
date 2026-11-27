@@ -1,5 +1,6 @@
 #include "backend.hpp"
 #include "office.hpp"
+#include "image_backend.hpp"
 #include <bcrypt.h>
 #include <iomanip>
 #include <set>
@@ -38,6 +39,7 @@ std::filesystem::path storageDirectory() {
     return path / L"PaperView" / L"annotations";
 }
 PdfBackend::PdfBackend(const std::filesystem::path &dll) {
+    images_ = std::make_unique<ImageBackend>();
     office_ = std::make_unique<OfficePageBackend>();
     library_ = LoadLibraryExW(dll.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!library_)
@@ -167,6 +169,7 @@ void PdfBackend::collectOutline(Document &d, void *parent, int depth, std::vecto
 }
 DocumentInfo PdfBackend::open(int id, const std::wstring &path, const std::string &password,
                               const std::function<bool()> &cancel, OfficeEngine engine) {
+    if (isImageDocument(path)) return images_->open(id,path,cancel);
     if (isOfficeDocument(path))
         return office_->open(id, path, engine, cancel);
     auto d = std::make_unique<Document>();
@@ -216,6 +219,7 @@ DocumentInfo PdfBackend::open(int id, const std::wstring &path, const std::strin
     }
 }
 void PdfBackend::close(int id) {
+    if (images_->contains(id)) { images_->close(id); return; }
     if (office_ && office_->contains(id)) {
         office_->close(id);
         return;
@@ -251,6 +255,7 @@ void *PdfBackend::cachedPage(int document, int index) {
     return handle;
 }
 std::shared_ptr<Tile> PdfBackend::render(TileKey key, const std::function<bool()> &cancel) {
+    if (images_->contains(key.document)) return images_->render(key,cancel);
     if (office_->contains(key.document))
         return office_->render(key, cancel);
     auto it = documents_.find(key.document);
@@ -392,6 +397,19 @@ void RenderScheduler::emit(WorkerResult r) {
     }
     PostMessageW(window_, ReadyMessage, 0, 0);
 }
+void RenderScheduler::finishTile(uint64_t generation, std::optional<WorkerResult> result) {
+    bool notify = false;
+    {
+        std::lock_guard lock(mutex_);
+        if (result && generation == generation_) {
+            notify = results_.empty();
+            results_.push_back(std::move(*result));
+        }
+        rendering_.reset();
+    }
+    if (notify)
+        PostMessageW(window_, ReadyMessage, 0, 0);
+}
 void RenderScheduler::enqueue(std::function<void(PdfBackend &)> f) {
     {
         std::lock_guard lock(mutex_);
@@ -427,6 +445,8 @@ void RenderScheduler::run() {
                     request = requests_.front();
                     requests_.erase(requests_.begin());
                     epoch = generation_;
+                    rendering_ = request->key;
+                    renderingGeneration_ = epoch;
                 }
             }
             if (command) {
@@ -438,20 +458,26 @@ void RenderScheduler::run() {
                     emit(std::move(r));
                 }
             } else if (request) {
+                std::optional<WorkerResult> result;
                 try {
                     auto tile = pdf.render(request->key, [&] { return stop_ || epoch != generation_; });
                     if (tile) {
-                        WorkerResult r(WorkerResult::Kind::Rendered, request->key.document);
-                        r.key = request->key;
-                        r.tile = std::move(tile);
-                        emit(std::move(r));
+                        // Make an opaque white block cheap to cache and paint over the preview.
+                        if (request->key.scale > 0 && !tile->pixels.empty() &&
+                            std::all_of(tile->pixels.begin(), tile->pixels.end(), [](uint8_t value) { return value == 255; })) {
+                            tile->white = true;
+                            std::vector<uint8_t>().swap(tile->pixels);
+                        }
+                        result.emplace(WorkerResult::Kind::Rendered, request->key.document);
+                        result->key = request->key;
+                        result->tile = std::move(tile);
                     }
                 } catch (const std::exception &e) {
-                    WorkerResult r(WorkerResult::Kind::RenderFailed, request->key.document);
-                    r.key = request->key;
-                    r.message = utf16(e.what());
-                    emit(std::move(r));
+                    result.emplace(WorkerResult::Kind::RenderFailed, request->key.document);
+                    result->key = request->key;
+                    result->message = utf16(e.what());
                 }
+                finishTile(epoch, std::move(result));
             }
         }
     } catch (const std::exception &e) {
@@ -490,6 +516,9 @@ void RenderScheduler::close(int id) {
     {
         std::lock_guard lock(mutex_);
         closed_.insert(id);
+        std::erase_if(requests_, [=](const auto &r) { return r.key.document == id; });
+        if (rendering_ && rendering_->document == id)
+            ++generation_;
     }
     enqueue([id](PdfBackend &pdf) { pdf.close(id); });
 }
@@ -497,8 +526,20 @@ void RenderScheduler::request(std::vector<RenderRequest> r) {
     std::stable_sort(r.begin(), r.end(), [](auto &a, auto &b) { return a.priority < b.priority; });
     {
         std::lock_guard lock(mutex_);
+        if (rendering_ && renderingGeneration_ == generation_) {
+            auto current = std::find_if(r.begin(), r.end(), [&](const auto &item) { return item.key == *rendering_; });
+            if (current == r.end())
+                ++generation_;
+            else
+                r.erase(current);
+        }
+        std::erase_if(r, [&](const auto &item) {
+            return std::any_of(results_.begin(), results_.end(), [&](const auto &done) {
+                return (done.kind == WorkerResult::Kind::Rendered || done.kind == WorkerResult::Kind::RenderFailed) &&
+                       done.key == item.key;
+            });
+        });
         requests_ = std::move(r);
-        ++generation_;
     }
     wake_.notify_one();
 }
@@ -520,64 +561,6 @@ void RenderScheduler::copyText(int id, int page) {
     });
 }
 std::deque<WorkerResult> RenderScheduler::take() {
-    std::lock_guard lock(mutex_);
-    std::deque<WorkerResult> r;
-    r.swap(results_);
-    return r;
-}
-SaveService::SaveService(HWND w, std::filesystem::path p) : repository_(std::move(p)), window_(w) {
-    thread_ = std::thread(&SaveService::run, this);
-}
-SaveService::~SaveService() {
-    {
-        std::lock_guard lock(mutex_);
-        stop_ = true;
-    }
-    wake_.notify_one();
-    thread_.join();
-}
-void SaveService::save(int id, std::string key, Snapshot s, uint64_t revision) {
-    {
-        std::lock_guard lock(mutex_);
-        jobs_.insert_or_assign(key, Job{id, key, std::move(s), revision});
-    }
-    wake_.notify_one();
-}
-void SaveService::run() {
-    while (true) {
-        std::optional<Job> job;
-        {
-            std::unique_lock lock(mutex_);
-            wake_.wait(lock, [&] { return stop_ || !jobs_.empty(); });
-            if (jobs_.empty() && stop_)
-                break;
-            auto i = jobs_.begin();
-            job = std::move(i->second);
-            jobs_.erase(i);
-            working_ = true;
-        }
-        WorkerResult r(WorkerResult::Kind::Saved, job->id);
-        r.token = job->revision;
-        try {
-            repository_.save(job->key, job->snapshot);
-        } catch (const std::exception &e) {
-            r.kind = WorkerResult::Kind::SaveFailed;
-            r.message = utf16(e.what());
-        }
-        {
-            std::lock_guard lock(mutex_);
-            results_.push_back(std::move(r));
-            working_ = false;
-        }
-        wake_.notify_all();
-        PostMessageW(window_, RenderScheduler::ReadyMessage, 0, 0);
-    }
-}
-void SaveService::flush() {
-    std::unique_lock lock(mutex_);
-    wake_.wait(lock, [&] { return jobs_.empty() && !working_; });
-}
-std::deque<WorkerResult> SaveService::take() {
     std::lock_guard lock(mutex_);
     std::deque<WorkerResult> r;
     r.swap(results_);

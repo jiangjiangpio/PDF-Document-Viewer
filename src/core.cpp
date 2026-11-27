@@ -39,6 +39,18 @@ static double segmentDistance(Point p, Point a, Point b) {
     double t = len > 0 ? std::clamp(((p.x - a.x) * d.x + (p.y - a.y) * d.y) / len, 0., 1.) : 0;
     return distance(p, {a.x + t * d.x, a.y + t * d.y});
 }
+Rect Stroke::bounds() const {
+    if (boundsCache) return *boundsCache;
+    if (points.empty()) return {};
+    double left=points[0].x, right=left, top=points[0].y, bottom=top;
+    for (auto p:points) {
+        left=std::min(left,p.x); right=std::max(right,p.x);
+        top=std::min(top,p.y); bottom=std::max(bottom,p.y);
+    }
+    Rect r{left-width/2.,top-width/2.,right-left+width,bottom-top+width};
+    boundsCache=r;
+    return r;
+}
 bool Stroke::hit(Point p, double radius) const {
     if (points.empty())
         return false;
@@ -72,10 +84,20 @@ void AnnotationDocument::apply(const Edit &e, bool forward) {
         else
             v.erase(std::remove(v.begin(), v.end(), e.added), v.end());
     }
+    if (!forward) {
+        for (auto &[idx, s] : e.fragments) {
+            auto &v = pages_[s->page];
+            v.erase(std::remove(v.begin(), v.end(), s), v.end());
+        }
+    }
     if (forward) {
         for (auto &[idx, s] : e.removed) {
             auto &v = pages_[s->page];
             v.erase(std::remove(v.begin(), v.end(), s), v.end());
+        }
+        for (auto &[idx, s] : e.fragments) {
+            auto &v = pages_[s->page];
+            v.insert(v.begin()+std::min(idx,v.size()),s);
         }
     } else
         for (auto &[idx, s] : e.removed) {
@@ -93,6 +115,7 @@ void AnnotationDocument::record(Edit e) {
 void AnnotationDocument::add(Stroke s) {
     if (s.points.empty())
         return;
+    s.boundsCache.reset();
     s.id = nextId_++;
     record({{}, std::make_shared<Stroke>(std::move(s))});
 }
@@ -116,6 +139,67 @@ bool AnnotationDocument::eraseIds(int page, const std::vector<uint64_t> &ids) {
     if (e.removed.empty())
         return false;
     record(std::move(e));
+    return true;
+}
+// Return the parameter interval of a segment inside the rectangular viewport.
+static bool clipSegment(Point a, Point b, Rect box, double &lo, double &hi) {
+    lo = 0; hi = 1;
+    auto axis = [&](double start, double end, double min, double max) {
+        double delta = end - start;
+        if (delta == 0) return start >= min && start <= max;
+        double t0 = (min-start)/delta, t1 = (max-start)/delta;
+        if (t0>t1) std::swap(t0,t1);
+        lo = std::max(lo,t0); hi = std::min(hi,t1);
+        return lo <= hi;
+    };
+    return axis(a.x,b.x,box.x,box.x+box.w) && axis(a.y,b.y,box.y,box.y+box.h);
+}
+bool AnnotationDocument::clearView(const ViewportController &view) {
+    Edit edit;
+    for (const auto &[page, entries] : pages_) {
+        size_t nextIndex = 0;
+        for (size_t i=0; i<entries.size(); ++i) {
+            const auto &stroke = *entries[i];
+            if (!view.strokeVisible(stroke)) { ++nextIndex; continue; }
+            edit.removed.emplace_back(i,entries[i]);
+            const double m = stroke.width * view.zoom / 2;
+            Rect box{-m,-m,view.width+2*m,view.height+2*m};
+            std::vector<Point> part;
+            auto finish = [&] {
+                if (part.empty()) return;
+                auto fragment = std::make_shared<Stroke>();
+                fragment->page=page; fragment->id=nextId_++; fragment->color=stroke.color;
+                fragment->kind=stroke.kind; fragment->width=stroke.width; fragment->points.swap(part);
+                edit.fragments.emplace_back(nextIndex++,std::move(fragment));
+            };
+            for (size_t j=1; j<stroke.points.size(); ++j) {
+                auto a=stroke.points[j-1], b=stroke.points[j];
+                auto at=[&](double t){ return Point{a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t}; };
+                double lo,hi;
+                if (!clipSegment(view.screenPoint(page,a),view.screenPoint(page,b),box,lo,hi)) {
+                    if (part.empty()) part.push_back(a);
+                    part.push_back(b);
+                    continue;
+                }
+                if (lo>0) { if (part.empty()) part.push_back(a); part.push_back(at(lo)); }
+                finish();
+                if (hi<1) { part.push_back(at(hi)); part.push_back(b); }
+            }
+            finish();
+        }
+    }
+    if (edit.removed.empty()) return false;
+    record(std::move(edit));
+    return true;
+}
+bool AnnotationDocument::removeWhere(const std::function<bool(const Stroke &)> &match) {
+    Edit edit;
+    for (const auto &[page, entries] : pages_)
+        for (size_t i = 0; i < entries.size(); ++i)
+            if (match(*entries[i]))
+                edit.removed.emplace_back(i, entries[i]);
+    if (edit.removed.empty()) return false;
+    record(std::move(edit));
     return true;
 }
 bool AnnotationDocument::undo() {
@@ -170,7 +254,7 @@ Snapshot AnnotationRepository::load(const std::string &key) const {
     data.view.offset = read<double>(in);
     data.view.fit = read<uint32_t>(in) != 0;
     if (data.view.page < 0 || data.view.rotation < 0 || data.view.rotation > 3 ||
-        !std::isfinite(data.view.zoom) || data.view.zoom < .1 || data.view.zoom > 8 ||
+        !std::isfinite(data.view.zoom) || data.view.zoom < .1 || data.view.zoom > 16 ||
         !std::isfinite(data.view.offset) || std::abs(data.view.offset) > 2)
         throw std::runtime_error("Invalid saved view");
     auto count = read<uint32_t>(in);
@@ -187,7 +271,7 @@ Snapshot AnnotationRepository::load(const std::string &key) const {
         auto len = read<uint32_t>(in);
         pointCount += len;
         if (s.page < 0 || s.page > 1000000 || static_cast<uint32_t>(s.kind) > 1 || !std::isfinite(s.width) ||
-            s.width <= 0 || s.width > 200 || len == 0 || pointCount > 20000000)
+            s.width <= 0 || s.width > 4096 || len == 0 || pointCount > 20000000)
             throw std::runtime_error("Invalid stroke data");
         s.points.reserve(len);
         for (uint32_t j = 0; j < len; ++j) {
@@ -244,15 +328,49 @@ void AnnotationRepository::save(const std::string &key, const Snapshot &data) co
 }
 void ViewportController::layout() {
     tops_.clear();
-    contentHeight_ = 16;
+    contentHeight_ = 16 * zoom;
     contentWidth_ = width;
+    double extraTop = 0, extraBottom = 0;
+    int page=0;
     for (auto s : sizes_) {
         auto ext = PageTransform(s, rotation).extent();
         tops_.push_back(contentHeight_);
-        contentHeight_ += ext.h * zoom + 16;
-        contentWidth_ = std::max(contentWidth_, ext.w * zoom + 32);
+        contentHeight_ += (ext.h + 16) * zoom;
+        contentWidth_ = std::max(contentWidth_, (ext.w + 32) * zoom);
+        auto bound = inkBounds_.find(page++);
+        if (bound == inkBounds_.end()) continue;
+        auto box=bound->second;
+        PageTransform transform(s,rotation);
+        auto a=transform.toView({box.x,box.y}), b=transform.toView({box.x+box.w,box.y+box.h});
+        double half = std::max(ext.w/2-std::min(a.x,b.x), std::max(a.x,b.x)-ext.w/2);
+        contentWidth_ = std::max(contentWidth_, (2*half+2)*zoom);
+        extraTop = std::max(extraTop,-(tops_.back()+std::min(a.y,b.y)*zoom));
+        extraBottom = std::max(extraBottom,tops_.back()+std::max(a.y,b.y)*zoom);
     }
+    for (auto &top : tops_) top += extraTop;
+    contentHeight_ = std::max(contentHeight_,extraBottom)+extraTop;
     clamp();
+}
+void ViewportController::includeInk(const PageStrokes &ink) {
+    auto anchor = nearestPage({width/2,height/2});
+    Point before = anchor>=0 ? screenPoint(anchor,{0,0}) : Point{};
+    inkBounds_.clear();
+    for (const auto &[page,strokes] : ink) {
+        if (page<0 || page>=count()) continue;
+        double x0=0,y0=0,x1=sizes_[page].w,y1=sizes_[page].h;
+        for (const auto &stroke : strokes) {
+            auto r=stroke->bounds();
+            x0=std::min(x0,r.x); y0=std::min(y0,r.y);
+            x1=std::max(x1,r.x+r.w); y1=std::max(y1,r.y+r.h);
+        }
+        if (x0<0 || y0<0 || x1>sizes_[page].w || y1>sizes_[page].h)
+            inkBounds_[page]={x0,y0,x1-x0,y1-y0};
+    }
+    layout();
+    if (anchor>=0) {
+        auto after=screenPoint(anchor,{0,0});
+        scrollX+=after.x-before.x; scrollY+=after.y-before.y; clamp();
+    }
 }
 void ViewportController::setPages(std::vector<Size> s) {
     sizes_ = std::move(s);
@@ -277,7 +395,7 @@ void ViewportController::fitWidth() {
     double maxWidth = 1;
     for (auto s : sizes_)
         maxWidth = std::max(maxWidth, PageTransform(s, rotation).extent().w);
-    zoom = std::clamp((width - 40) / maxWidth, .1, 8.);
+    zoom = std::clamp((width - 40) / maxWidth, .1, 16.);
     layout();
 }
 void ViewportController::setRotation(int r) {
@@ -294,7 +412,7 @@ void ViewportController::setZoom(double z, Point anchor) {
     double old = zoom;
     double oldY = scrollY;
     fit = false;
-    zoom = std::clamp(z, .1, 8.);
+    zoom = std::clamp(z, .1, 16.);
     layout();
     if (loc) {
         Point now = screenPoint(loc->first, loc->second);
@@ -317,7 +435,7 @@ Rect ViewportController::pageRect(int p) const {
     if (p < 0 || p >= count())
         return {};
     auto s = PageTransform(sizes_[p], rotation).extent();
-    return {std::max(16., (contentWidth_ - s.w * zoom) / 2) - scrollX, tops_[p] - scrollY, s.w * zoom,
+    return {std::max(16.*zoom, (contentWidth_ - s.w * zoom) / 2) - scrollX, tops_[p] - scrollY, s.w * zoom,
             s.h * zoom};
 }
 std::optional<std::pair<int, Point>> ViewportController::pageAt(Point s) const {
@@ -329,6 +447,38 @@ std::optional<std::pair<int, Point>> ViewportController::pageAt(Point s) const {
                 p, PageTransform(sizes_[p], rotation).toPage({(s.x - r.x) / zoom, (s.y - r.y) / zoom}));
     }
     return {};
+}
+int ViewportController::nearestPage(Point screen) const {
+    if (!count()) return -1;
+    auto it = std::upper_bound(tops_.begin(), tops_.end(), screen.y + scrollY);
+    int i = std::clamp(int(it - tops_.begin()) - 1, 0, count() - 1);
+    if (i + 1 < count()) {
+        auto r = pageRect(i);
+        if (screen.y > (r.y + r.h + pageRect(i + 1).y) / 2) ++i;
+    }
+    return i;
+}
+Point ViewportController::pagePoint(int page, Point screen) const {
+    auto r = pageRect(page);
+    return PageTransform(sizes_.at(page), rotation).toPage({(screen.x-r.x)/zoom, (screen.y-r.y)/zoom});
+}
+bool ViewportController::strokeVisible(const Stroke &s) const {
+    if (s.page < 0 || s.page >= count() || s.points.empty()) return false;
+    auto box=s.bounds();
+    auto left=screenPoint(s.page,{box.x,box.y}), right=screenPoint(s.page,{box.x+box.w,box.y+box.h});
+    if (std::max(left.x,right.x)<0 || std::max(left.y,right.y)<0 ||
+        std::min(left.x,right.x)>width || std::min(left.y,right.y)>height) return false;
+    const double margin = s.width * zoom / 2;
+    Rect bounds{-margin, -margin, width+2*margin, height+2*margin};
+    auto a = screenPoint(s.page, s.points.front());
+    if (bounds.contains(a)) return true;
+    for (auto point : s.points) {
+        auto b = screenPoint(s.page, point);
+        double lo,hi;
+        if (clipSegment(a,b,bounds,lo,hi)) return true;
+        a = b;
+    }
+    return false;
 }
 Point ViewportController::screenPoint(int page, Point p) const {
     auto q = PageTransform(sizes_[page], rotation).toView(p);
@@ -356,7 +506,7 @@ void ViewportController::goTo(int p) {
     if (!count())
         return;
     p = std::clamp(p, 0, count() - 1);
-    scrollY = tops_[p] - 16;
+    scrollY = tops_[p] - 16 * zoom;
     clamp();
 }
 ViewState ViewportController::state() const {
@@ -369,7 +519,7 @@ void ViewportController::restore(ViewState s) {
         return;
     rotation = s.rotation;
     fit = s.fit;
-    zoom = std::clamp(s.zoom, .1, 8.);
+    zoom = std::clamp(s.zoom, .1, 16.);
     if (fit)
         fitWidth();
     else
@@ -383,6 +533,7 @@ void InputController::down(uint32_t id, Point p, bool drawing) {
     if (pointers_.count(id))
         return;
     pointers_[id] = p;
+    pinchReference_ = 0;
     if (pointers_.size() == 1) {
         suppress_ = false;
         ink_ = drawing;
@@ -416,6 +567,23 @@ void InputController::move(uint32_t id, Point p) {
     double len = distance(a->second, b->second);
     if (oldDistance > 8 && len > 8)
         callbacks_.pinch(oldCenter, len / oldDistance, center - oldCenter);
+}
+void InputController::frame(const std::map<uint32_t, Point> &positions) {
+    if (pointers_.size() < 2) return;
+    auto a = pointers_.begin(), b = std::next(a);
+    if (!positions.count(a->first) || !positions.count(b->first)) return;
+    const auto A = positions.at(a->first), B = positions.at(b->first);
+    Point center{(a->second.x+b->second.x)/2, (a->second.y+b->second.y)/2};
+    Point next{(A.x+B.x)/2,(A.y+B.y)/2};
+    double old = distance(a->second,b->second), now = distance(A,B);
+    a->second = A; b->second = B;
+    if (distance(center,next) < .001 && std::abs(now-old) < .001) return;
+    if (!pinchReference_) pinchReference_=old;
+    double factor=1.;
+    if (pinchReference_>8 && now>8 && std::abs(now-pinchReference_)>=std::max(1.5,pinchReference_*.009)) {
+        factor=now/pinchReference_; pinchReference_=now;
+    }
+    callbacks_.pinch(center, factor, next-center);
 }
 void InputController::up(uint32_t id, Point p) {
     if (!pointers_.count(id))
@@ -462,7 +630,7 @@ void TileCache::put(const TileKey &k, std::shared_ptr<Tile> t) {
     bytes_ += t->pixels.size();
     age_.push_back(k);
     entries_.emplace(k, Item{t, std::prev(age_.end())});
-    while (bytes_ > budget_ && !age_.empty()) {
+    while ((bytes_ > budget_ || entries_.size() > 8192) && !age_.empty()) {
         auto old = age_.front();
         auto e = entries_.find(old);
         bytes_ -= e->second.tile->pixels.size();

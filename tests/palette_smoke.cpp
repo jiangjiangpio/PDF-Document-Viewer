@@ -67,7 +67,7 @@ int main() {
 
         PostMessageW(panel, WM_CLOSE, 0, 0);
     });
-    paper::PenPalette palette(color, width, false);
+    paper::PenPalette palette(color, width);
     palette.show(owner, anchor);
     driver.join();
     DestroyWindow(owner);

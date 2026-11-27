@@ -102,6 +102,10 @@ void CanvasRenderer::text(const std::wstring &s, Rect r, uint32_t c) {
     target_->DrawText(s.c_str(), static_cast<UINT32>(s.size()), format_, rect(r), brush_);
 }
 void CanvasRenderer::bitmap(const TileKey &k, const std::shared_ptr<Tile> &tile, Rect r) {
+    if (tile->white) {
+        fill(r, 0xffffff);
+        return;
+    }
     auto i = bitmaps_.find(k);
     if (i == bitmaps_.end()) {
         size_t bytes = tile->pixels.size();

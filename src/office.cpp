@@ -1,5 +1,8 @@
 #include "office.hpp"
+#include "image_backend.hpp"
 #include <cwctype>
+#include <fstream>
+#include <iomanip>
 namespace paper {
 using automation::call;
 using automation::get;
@@ -20,7 +23,7 @@ bool isOfficeDocument(const std::filesystem::path &path) {
     return e == L".doc" || e == L".docx";
 }
 bool isSupportedDocument(const std::filesystem::path &path) {
-    return isOfficeDocument(path) || extension(path) == L".pdf";
+    return isImageDocument(path) || isOfficeDocument(path) || extension(path) == L".pdf";
 }
 OfficePageBackend::Document::~Document() {
     if (document.v.vt == VT_DISPATCH)
@@ -65,14 +68,47 @@ DocumentInfo OfficePageBackend::open(int id, const std::wstring &path, OfficeEng
             auto window = item(windows.object(), 1);
             auto view = get(window.object(), L"View");
             call(view.object(), L"Type", DISPATCH_PROPERTYPUT, {Value(3)}); // print layout
-            call(doc->document.object(), L"Repaginate", DISPATCH_METHOD);
+            // Pages.Count in print layout already requests pagination. Avoid a second full pass.
             auto panes = get(window.object(), L"Panes");
             auto pane = item(panes.object(), 1);
             doc->pages = get(pane.object(), L"Pages");
             int count = (int)get(doc->pages.object(), L"Count").number();
             if (count < 1 || count > 20000)
                 throw PdfError("Unsupported native Word page count");
-            for (int p = 1; p <= count; ++p) {
+            // A change in printer or Office version can affect layout even for identical document bytes.
+            std::filesystem::path layoutFile;
+            try {
+                auto version = get(doc->app->value.object(), L"Version");
+                auto printer = get(doc->app->value.object(), L"ActivePrinter");
+                auto layoutKey = hashText(sourceIdentity + ":" + std::to_string((int)engine) + ":" +
+                                          utf8(version.text()) + ":" + utf8(printer.text()));
+                layoutFile = storageDirectory().parent_path() / L"office-layout" / layoutKey;
+                std::ifstream cache(layoutFile);
+                size_t n=0;
+                if (cache >> n && n == size_t(count)) {
+                    for (int p=0; p<count; ++p) {
+                        Size size;
+                        if (!(cache >> size.w >> size.h) || !(size.w>0 && size.h>0 && size.w<=200000 && size.h<=200000)) break;
+                        doc->sizes.push_back(size);
+                    }
+                    if (doc->sizes.size() != n) doc->sizes.clear();
+                }
+            } catch (...) { layoutFile.clear(); }
+            bool cached = !doc->sizes.empty();
+            if (!cached && count > 1) {
+                // A one-section Word document has one paper size. Avoid three COM calls per page.
+                try {
+                    auto sections = get(doc->document.object(),L"Sections");
+                    if (get(sections.object(),L"Count").number() == 1) {
+                        auto page = item(doc->pages.object(),1);
+                        Size size{get(page.object(),L"Width").number(),get(page.object(),L"Height").number()};
+                        if (size.w>0 && size.h>0 && size.w<=200000 && size.h<=200000)
+                            doc->sizes.assign(count,size);
+                    }
+                } catch (...) { /* Compatible providers may omit Sections. */ }
+            }
+            bool haveSizes = !doc->sizes.empty();
+            for (int p = 1; !haveSizes && p <= count; ++p) {
                 if (cancel())
                     throw PdfError("Opening cancelled");
                 auto page = item(doc->pages.object(), p);
@@ -81,6 +117,12 @@ DocumentInfo OfficePageBackend::open(int id, const std::wstring &path, OfficeEng
                     size.w > 200000 || size.h > 200000)
                     throw PdfError("Invalid native Word page size");
                 doc->sizes.push_back(size);
+            }
+            if (!cached && !layoutFile.empty()) {
+                std::error_code ec; std::filesystem::create_directories(layoutFile.parent_path(),ec);
+                std::ofstream out(layoutFile);
+                out << std::setprecision(17) << count << '\n';
+                for (auto size : doc->sizes) out << size.w << ' ' << size.h << '\n';
             }
             DocumentInfo info;
             info.id = id;
@@ -234,13 +276,44 @@ std::wstring OfficePageBackend::text(int id, int page) {
     auto &doc = *documents_.at(id);
     if (page < 0 || page >= (int)doc.sizes.size())
         return {};
-    auto start = call(doc.document.object(), L"GoTo", DISPATCH_METHOD, {Value(1), Value(1), Value(page + 1)});
+    try {
+        // Some layout rectangles cover graphics and have no text range.
+        auto layout = item(doc.pages.object(), page + 1);
+        auto rectangles = get(layout.object(), L"Rectangles");
+        int count = (int)get(rectangles.object(), L"Count").number();
+        std::map<int,std::pair<int,std::wstring>> runs;
+        for (int i=1; i<=count; ++i) {
+            try {
+                auto rectangle=item(rectangles.object(),i);
+                auto range=get(rectangle.object(), L"Range");
+                int start=(int)get(range.object(), L"Start").number();
+                int end=(int)get(range.object(), L"End").number();
+                auto text=get(range.object(),L"Text").text();
+                if (!text.empty() && end>runs[start].first) runs[start]={end,std::move(text)};
+            } catch (const std::exception &) { continue; }
+        }
+        std::wstring result;
+        int previousEnd=-1;
+        for (auto &[start,run]:runs)
+            if (start>=previousEnd && result.size()<1000000) {
+                result+=run.second; result+=L'\n'; previousEnd=run.first;
+            }
+        if (!result.empty()) return result;
+    } catch (const std::exception &) { /* Fall back to range navigation. */ }
     auto content = get(doc.document.object(), L"Content");
+    auto pageStart = [&](int oneBased) {
+        try {
+            return call(content.object(), L"GoTo", DISPATCH_METHOD,
+                        {Value(1), Value(1), Value(oneBased), Value::missing()});
+        } catch (const std::exception &) {
+            return call(doc.document.object(), L"GoTo", DISPATCH_METHOD, {Value(1),Value(1),Value(oneBased)});
+        }
+    };
+    auto start = pageStart(page + 1);
     int begin = (int)get(start.object(), L"Start").number();
     int end = (int)get(content.object(), L"End").number();
     if (page + 1 < (int)doc.sizes.size()) {
-        auto next =
-            call(doc.document.object(), L"GoTo", DISPATCH_METHOD, {Value(1), Value(1), Value(page + 2)});
+        auto next = pageStart(page + 2);
         end = (int)get(next.object(), L"Start").number();
     }
     auto range = call(doc.document.object(), L"Range", DISPATCH_METHOD, {Value(begin), Value(end)});

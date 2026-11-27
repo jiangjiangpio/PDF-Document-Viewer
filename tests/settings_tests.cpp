@@ -17,7 +17,16 @@ int main() {
     settings.openSidebar = false;
     settings.restoreSession = false;
     settings.officePdfMode = true;
+    settings.autoPenWidth = false;
+    settings.penColor = 0xdc2626;
+    settings.penWidth = 6.5;
+    settings.penScreenWidthMm = 1.3;
+    settings.dailyPenWidthMm = 0.85;
+    settings.screenCalibrations["test monitor:1920x1080"] = 4.253721943;
+    settings.penWidthOverrideDay = beijingDay();
     settings.blurLevel = 3;
+    settings.frostTransparency = 37;
+    settings.frostTint = FrostTint::White;
     settings.scrollSensitivity = 2.25;
     settings.officeEngine = OfficeEngine::Word;
     settings.bindings[(int)Action::Open] = {'L', 3};
@@ -31,7 +40,14 @@ int main() {
     auto restored = repo.load();
     check(restored.officePdfMode && !restored.openSidebar && !restored.restoreSession &&
               restored.blurLevel == 3 && restored.scrollSensitivity == 2.25 &&
-              restored.officeEngine == OfficeEngine::Word && restored.bindings == settings.bindings,
+              restored.frostTransparency == 37 && restored.frostTint == FrostTint::White &&
+              restored.officeEngine == OfficeEngine::Word && !restored.autoPenWidth &&
+              restored.penColor == settings.penColor && restored.penWidth == settings.penWidth &&
+              restored.penScreenWidthMm == settings.penScreenWidthMm &&
+              restored.dailyPenWidthMm == settings.dailyPenWidthMm &&
+              restored.screenCalibrations == settings.screenCalibrations &&
+              restored.penWidthOverrideDay == settings.penWidthOverrideDay &&
+              restored.bindings == settings.bindings,
           "all settings persist");
     auto duplicate = settings;
     duplicate.bindings[0] = duplicate.bindings[1];
@@ -61,6 +77,13 @@ int main() {
         rejected = true;
     }
     check(rejected, "invalid sensitivity rejected");
+    {
+        std::ofstream out(dir / "settings.txt");
+        out << "PDFVIEW_SETTINGS 2\npen_screen_width_mm 1.3\n";
+    }
+    auto legacy = repo.load();
+    check(legacy.dailyPenWidthMm == 2 && legacy.penScreenWidthMm == 1.3,
+          "older settings retain manual width and use 2 mm as daily width");
     {
         std::ofstream out(dir / "settings.txt");
         out << "PDFVIEW_SETTINGS 1\nblur garbage\n";
